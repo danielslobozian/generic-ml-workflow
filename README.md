@@ -11,10 +11,11 @@ It is **not** a CLI you invoke with arguments: there is no usage model in which 
 human types a workflow name and flags on a shell command line. Launching it *is*
 the interface.
 
-> **Status: alpha, `0.0.3`.** The app exists, installs, launches, checks its
-> mandatory dependencies (git + gmlcache), interviews you on first run and
-> git-inits your flows folder, loads and validates workflow definitions
-> (`/list`, `/validate`), and is honest about what it can't do yet.
+> **Status: alpha, `0.0.4`.** The app checks its mandatory dependencies
+> (git + gmlcache), interviews you on first run and git-inits your flows
+> folder, loads and validates workflow definitions, and has an event-sourced
+> store (`/replay`, `/status`) plus the executable-step building blocks. It is
+> honest about what it can't do yet.
 
 ## The family
 
