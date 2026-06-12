@@ -3,6 +3,8 @@
 """The REPL shell, driven through the scripted-input harness (injected I/O --
 prompt_toolkit is never constructed on this path)."""
 
+from pathlib import Path
+
 from generic_ml_workflow import __version__
 from generic_ml_workflow.core.detect import ClientStatus, Detection
 from generic_ml_workflow.repl.shell import Repl
@@ -144,14 +146,26 @@ def test_status_shows_each_setting_with_source(tmp_path, monkeypatch):
     monkeypatch.setenv("GMLWORKFLOW_STATE", "/env/state")
     out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)
     assert "config file: " + str(cfg) in out
-    assert "/cfg/flows" in out and "(config)" in out
-    assert "/env/state" in out and "(env)" in out
+    # construct expectations through Path so separators match the platform
+    assert str(Path("/cfg/flows")) in out and "(config)" in out
+    assert str(Path("/env/state")) in out and "(env)" in out
     assert "(default)" in out  # workspace fell through
 
 
-def test_interview_standard_choice_writes_config_and_creates_folders(tmp_path):
+def test_interview_standard_choice_writes_config_and_creates_folders(tmp_path, monkeypatch):
+    from generic_ml_workflow.core import paths as paths_mod
+
+    # keep the "standard OS folders" choice inside tmp -- tests must never
+    # create real directories in the developer's home
+    monkeypatch.setattr(
+        paths_mod.platformdirs, "user_data_dir", lambda app: str(tmp_path / "data" / app)
+    )
+    monkeypatch.setattr(
+        paths_mod.platformdirs, "user_state_dir", lambda app: str(tmp_path / "stt" / app)
+    )
     cfg = tmp_path / "cfg" / "config.toml"
     out, repl = drive_at(["1", "/status", "/quit"], PRESENT, cfg)
+    assert (tmp_path / "data" / "gmlworkflow" / "flows").is_dir()
     assert "no configuration found" in out
     assert cfg.is_file()
     assert "wrote " + str(cfg) in out
