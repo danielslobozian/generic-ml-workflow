@@ -25,6 +25,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   passthrough is preserved -- stdout/stderr/exit captured, an offline cache miss
   surfaces gmlcache's error verbatim. The engine still executes no model call
   itself (invariant 3).
+- The orchestrator runs **interpretable (shot) steps** through the seam: when a
+  step is a shot, it builds the `[context, prompt, files]` envelope (cap/
+  methodology as the run-agnostic context, bound artifact products as input
+  files), resolves the tier to a concrete client/model via a supplied
+  `ShotConfig` (full tier reconciliation is 0.0.7), runs the shot, and feeds the
+  product into the context-fold — so a shot can consume an earlier step's output.
+  Without a `ShotConfig`, a shot step still stops honestly. `run_shot` is
+  injectable, so the path is tested without a real client.
 
 ## [0.0.5] - 2026-06-12
 

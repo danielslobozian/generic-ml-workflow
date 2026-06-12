@@ -167,7 +167,7 @@ def test_interpretable_step_stops_honestly(tmp_path):
     wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
     report = Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP)
     assert not report.completed
-    assert "0.0.6" in report.stopped_reason
+    assert "no client/model" in report.stopped_reason
     assert store.execution(report.execution_id)["status"] == "failed"
 
 
@@ -180,3 +180,141 @@ def test_invalid_workflow_never_runs(tmp_path):
         Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP)
     # nothing was recorded
     assert store.executions() == []
+
+
+# --- 0.0.6: interpretable steps run through the gmlcache seam ------------------
+
+from generic_ml_workflow.core import shotrunner  # noqa: E402
+from generic_ml_workflow.core.contract import Tier  # noqa: E402
+from generic_ml_workflow.core.orchestrator import ShotConfig  # noqa: E402
+
+
+def _fake_shot_runner(produces: str):
+    """A stand-in for shotrunner.run_shot that simulates gmlcache producing the
+    step's declared output, without any real client."""
+
+    def runner_fn(spec, envelope, resolution, run_dir, *, store, mode, **kw):
+        from pathlib import Path as _P
+
+        rd = _P(run_dir)
+        if rd.exists():
+            import shutil
+
+            shutil.rmtree(rd)
+        rd.mkdir(parents=True)
+        out = spec.outputs[0]
+        (rd / out.filename).write_text(produces, encoding="utf-8")
+        import hashlib
+
+        sha = hashlib.sha256(produces.encode()).hexdigest()
+        return shotrunner.ShotResult(
+            step_id=spec.id,
+            attempt=1,
+            exit_code=0,
+            stdout=produces,
+            stderr="",
+            duration_seconds=0.01,
+            outputs=(shotrunner.ProducedOutput(out.name, rd / out.filename, sha),),
+        )
+
+    return runner_fn
+
+
+def _shot_config(tmp_path, produces="a summary", mode="cache"):
+    return ShotConfig(
+        resolutions={Tier.MEDIUM: shotrunner.Resolution("claude", "sonnet")},
+        store=tmp_path / "store",
+        mode=mode,
+        run_shot=_fake_shot_runner(produces),
+    )
+
+
+def test_interpretable_step_stops_when_no_shot_config(tmp_path):
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="judge", nature=StepNature.INTERPRETABLE, cap="analyst", outputs=(_out("v", "v.md"),)
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP)  # no shot_config
+    assert not report.completed and "no client/model" in report.stopped_reason
+
+
+def test_shot_step_runs_through_the_seam(tmp_path):
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=Tier.MEDIUM,
+        outputs=(_out("summary", "summary.md"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        shot_config=_shot_config(tmp_path, "the summary"),
+    )
+    assert report.completed and report.steps_run == ["summarize"]
+    events = store.replay(report.execution_id)
+    types = [e.event_type for e in events]
+    assert et.EventType.ARTIFACT_CREATED in types
+    art = next(e for e in events if e.event_type is et.EventType.ARTIFACT_CREATED)
+    assert Path(art.payload.path).read_text() == "the summary"
+    assert store.execution(report.execution_id)["status"] == "completed"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_mixed_executable_then_shot_carries_context(tmp_path):
+    # fetch (executable) -> summarize (shot): the shot consumes the executable's product
+    store = EventStore(":memory:")
+    fetch_sh = tmp_path / "fetch.sh"
+    fetch_sh.write_text("printf 'raw text' > page.txt\n", encoding="utf-8")
+    fetch = StepSpec(
+        id="fetch",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(fetch_sh),
+        outputs=(_out("page", "page.txt"),),
+    )
+    summarize = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=Tier.MEDIUM,
+        inputs=(InputPort("source", Requirement.ARTIFACT),),
+        outputs=(_out("summary", "summary.md"),),
+    )
+    wf = Workflow(
+        name="w",
+        input_type=InputType.FREESTYLE,
+        steps=(fetch, summarize),
+        bindings=(Binding("summarize", "source", "page"),),
+    )
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        shot_config=_shot_config(tmp_path, "summarized"),
+    )
+    assert report.completed and report.steps_run == ["fetch", "summarize"]
+
+
+def test_unconfigured_tier_is_an_error(tmp_path):
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="s",
+        nature=StepNature.INTERPRETABLE,
+        cap="c",
+        tier=Tier.HIGH,  # only MEDIUM configured
+        outputs=(_out("o", "o.md"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        shot_config=_shot_config(tmp_path),
+    )
+    assert not report.completed and report.failed_step == "s"
+    types = [e.event_type for e in store.replay(report.execution_id)]
+    assert et.EventType.STEP_FAILED in types

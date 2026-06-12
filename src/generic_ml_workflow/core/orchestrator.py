@@ -34,13 +34,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from generic_ml_workflow.core import runner
+from generic_ml_workflow.core import runner, shotrunner
 from generic_ml_workflow.core.contract import (
     Requirement,
     StepNature,
     StepSpec,
+    Tier,
     Workflow,
 )
+from generic_ml_workflow.core.envelope import build_envelope
 from generic_ml_workflow.core.events import EventStore, new_execution_id
 from generic_ml_workflow.core.stamp import Stamp
 from generic_ml_workflow.core import eventtypes as et
@@ -59,6 +61,27 @@ class RunReport:
     steps_run: list[str] = field(default_factory=list)
     stopped_reason: str | None = None  # why a run stopped early (e.g. an ML step)
     failed_step: str | None = None
+
+
+@dataclass
+class ShotConfig:
+    """How interpretable steps resolve and cache (DESIGN.md SS9). Tier -> concrete
+    (client, model, effort); the cassette ``store`` and ``mode``. Full tier
+    reconciliation against installed clients is slice 0.0.7; here the caller
+    supplies the resolution map explicitly. ``run_shot`` is injectable for tests."""
+
+    resolutions: dict[Tier, shotrunner.Resolution]
+    store: Path
+    mode: str = "cache"
+    run_shot: object = staticmethod(shotrunner.run_shot)
+
+    def resolve(self, tier: Tier) -> shotrunner.Resolution:
+        if tier not in self.resolutions:
+            raise OrchestratorError(
+                f"no client/model configured for tier '{tier.value}' "
+                "(tier reconciliation arrives in slice 0.0.7; supply a resolution)"
+            )
+        return self.resolutions[tier]
 
 
 def warm_up(
@@ -105,6 +128,7 @@ class Orchestrator:
         job_id: str | None = None,
         config_values: dict[str, str] | None = None,
         credentials: set[str] | None = None,
+        shot_config: ShotConfig | None = None,
     ) -> RunReport:
         # gate: the definition must be valid (warnings are fine, errors are not)
         result = workflow.validate()
@@ -144,16 +168,25 @@ class Orchestrator:
 
         for step in workflow.steps:
             if step.nature is StepNature.INTERPRETABLE:
-                # the shot path is slice 0.0.6 -- stop honestly, do not fake it.
-                report.stopped_reason = (
-                    f"step '{step.id}' is interpretable (a shot); running shots arrives "
-                    "with the gmlcache seam in slice 0.0.6."
-                )
-                self._store.emit(
-                    et.WorkflowExecutionFailed(reason=report.stopped_reason),
-                    execution_id=execution_id,
-                )
-                return report
+                if shot_config is None:
+                    # no shot configuration supplied -> stop honestly, do not fake it
+                    report.stopped_reason = (
+                        f"step '{step.id}' is a shot, but no client/model resolution was "
+                        "provided (configure tiers -- slice 0.0.7 -- or pass a shot_config)."
+                    )
+                    self._store.emit(
+                        et.WorkflowExecutionFailed(reason=report.stopped_reason),
+                        execution_id=execution_id,
+                    )
+                    return report
+                if not self._run_shot(step, execution_id, context, bindings, report, shot_config):
+                    self._store.emit(
+                        et.WorkflowExecutionFailed(reason=f"step '{step.id}' failed"),
+                        execution_id=execution_id,
+                    )
+                    report.failed_step = step.id
+                    return report
+                continue
 
             if not self._run_step(step, execution_id, context, bindings, report):
                 self._store.emit(
@@ -201,6 +234,88 @@ class Orchestrator:
                         name=produced.name,
                         path=str(produced.path),
                         sha256=produced.sha256,
+                    ),
+                    execution_id=execution_id,
+                    step_name=step.id,
+                )
+                context[produced.name] = produced.path
+        self._store.emit(
+            et.StepCompleted(step_name=step.id), execution_id=execution_id, step_name=step.id
+        )
+        report.steps_run.append(step.id)
+        return True
+
+    def _run_shot(self, step, execution_id, context, bindings, report, shot_config) -> bool:
+        self._store.emit(
+            et.StepStarted(step_name=step.id), execution_id=execution_id, step_name=step.id
+        )
+        # context prefix: the cap/methodology -- run-agnostic by construction
+        prefix_parts = []
+        if step.cap:
+            prefix_parts.append(f"You are: {step.cap}.")
+        if step.methodology:
+            prefix_parts.append(step.methodology)
+        context_text = "\n".join(prefix_parts) or "You are a careful assistant."
+        # files: the bound artifact ports (resolved from the context as paths)
+        files: list[str] = []
+        for port in step.artifact_ports():
+            product = bindings[(step.id, port.name)]
+            value = context[product]
+            if isinstance(value, Path):
+                files.append(str(value))
+        prompt = f"Perform the step '{step.id}'. Produce its declared outputs."
+
+        try:
+            envelope = build_envelope(context_text, prompt, tuple(files))
+        except Exception as exc:  # PurityError -> a definition/builder problem
+            self._store.emit(
+                et.StepFailed(step_name=step.id, reason=str(exc)),
+                execution_id=execution_id,
+                step_name=step.id,
+            )
+            return False
+
+        try:
+            resolution = shot_config.resolve(step.tier)
+        except OrchestratorError as exc:
+            self._store.emit(
+                et.StepFailed(step_name=step.id, reason=str(exc)),
+                execution_id=execution_id,
+                step_name=step.id,
+            )
+            return False
+        run_dir = self._workspace / "executions" / execution_id / step.id
+        try:
+            result = shot_config.run_shot(
+                step,
+                envelope,
+                resolution,
+                run_dir,
+                store=shot_config.store,
+                mode=shot_config.mode,
+            )
+        except shotrunner.ShotError as exc:
+            self._store.emit(
+                et.StepFailed(step_name=step.id, reason=str(exc)),
+                execution_id=execution_id,
+                step_name=step.id,
+            )
+            return False
+        if not result.ok:
+            self._store.emit(
+                et.StepFailed(
+                    step_name=step.id, reason=f"exit {result.exit_code}: {result.stderr.strip()}"
+                ),
+                execution_id=execution_id,
+                step_name=step.id,
+            )
+            return False
+        for produced in result.outputs:
+            out_spec = next(o for o in step.outputs if o.name == produced.name)
+            if out_spec.lifespan.value == "durable":
+                self._store.emit(
+                    et.ArtifactCreated(
+                        name=produced.name, path=str(produced.path), sha256=produced.sha256
                     ),
                     execution_id=execution_id,
                     step_name=step.id,
