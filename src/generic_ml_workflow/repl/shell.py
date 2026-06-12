@@ -46,7 +46,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from generic_ml_workflow import __version__
-from generic_ml_workflow.core import config, detect, discovery, paths
+from generic_ml_workflow.core import config, detect, discovery, events, paths
 from generic_ml_workflow.repl import banner
 
 ROADMAP_URL = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/docs/ROADMAP.md"
@@ -129,8 +129,8 @@ class Repl:
                 "run a workflow (the run interview)",
             ),
             "replay": _Verb(
-                _stub("0.0.4", "replaying an execution's story"),
-                "/replay <execution>",
+                Repl._do_replay,
+                "/replay [<execution>]",
                 "reconstruct an execution from the event log",
             ),
             "status": _Verb(
@@ -392,6 +392,65 @@ class Repl:
             return None
         return self.settings.flows_dir
 
+    def _open_store(self) -> "events.EventStore | None":
+        """Open the event store at the configured state dir's db path. The store is
+        read-only here (nothing emits run events until /run, slice 0.0.5), so an
+        absent database simply has no executions to show."""
+        if self.settings is None:
+            self._write("settings not resolved (startup did not run).")
+            return None
+        db = self.settings.state_dir / "gmlworkflow.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        return events.EventStore(db)
+
+    def _do_replay(self, args: list[str]) -> bool:
+        store = self._open_store()
+        if store is None:
+            return True
+        try:
+            if not args:
+                execs = store.executions()
+                if not execs:
+                    self._write("no executions recorded yet.")
+                    self._write("run a workflow (slice 0.0.5) and its story will appear here.")
+                    return True
+                self._write("executions:")
+                for e in execs:
+                    job = f"  job={e['job_id']}" if e["job_id"] else ""
+                    self._write(
+                        f"  {e['execution_id'][:12]}  {e['workflow_name']} "
+                        f"<{e['input_type']}>  [{e['status']}]{job}"
+                    )
+                self._write("replay one with '/replay <execution>'.")
+                return True
+            target = args[0]
+            row = store.execution(target) or self._find_execution_prefix(store, target)
+            if row is None:
+                self._write(f"no execution '{target}'. try '/replay' to list them.")
+                return True
+            self._render_replay(store, row)
+            return True
+        finally:
+            store.close()
+
+    def _find_execution_prefix(self, store, prefix: str):
+        matches = [e for e in store.executions() if e["execution_id"].startswith(prefix)]
+        return matches[0] if len(matches) == 1 else None
+
+    def _render_replay(self, store, row) -> None:
+        full = store.execution(row["execution_id"]) or row
+        self._write(f"execution {full['execution_id']}")
+        stamp = f"commit {full['commit']}" if full.get("commit") else "unversioned"
+        self._write(
+            f"  {full['workflow_name']} <{full['input_type']}>  [{full['status']}]  "
+            f"({stamp}, engine {full.get('engine_version')})"
+        )
+        story = store.replay(full["execution_id"])
+        self._write(f"  {len(story)} event(s):")
+        for ev in story:
+            scope = f" {ev.step_name}" if ev.step_name else ""
+            self._write(f"    {ev.occurred_at}  {ev.event_type.value}{scope}")
+
     def _do_status(self, args: list[str]) -> bool:
         s = self.settings
         if s is None:
@@ -412,6 +471,9 @@ class Repl:
         ]
         for name, value, source in rows:
             self._write(f"  {name:<10} {str(value):<52} ({source})")
+        db = s.state_dir / "gmlworkflow.db"
+        present = "present" if db.exists() else "not created yet"
+        self._write(f"  {'event log':<10} {str(db):<52} ({present})")
         return True
 
     def _startup_detection(self) -> None:

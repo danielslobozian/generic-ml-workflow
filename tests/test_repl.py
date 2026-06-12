@@ -72,7 +72,6 @@ def test_stub_verbs_answer_not_yet_with_the_slice():
 
 def test_every_stub_names_its_slice():
     for verb, slice_id in [
-        ("/replay", "0.0.4"),
         ("/cost", "0.0.10"),
         ("/export", "0.1.2"),
         ("/companion", "0.3.1"),
@@ -307,3 +306,66 @@ def test_validate_without_argument_shows_usage(tmp_path):
     cfg = _cfg_with_flows(tmp_path, flows)
     out, _ = drive_at(["/validate", "/quit"], PRESENT, cfg)
     assert "usage:" in out
+
+
+# --- 0.0.4: /replay reads the (real, possibly empty) event store --------------
+
+
+def _cfg_with_state(tmp_path):
+    state = tmp_path / "state"
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        f'[paths]\nstate = "{state.as_posix()}"\n[ui]\nbanner = "panel"\n', encoding="utf-8"
+    )
+    return cfg, state
+
+
+def test_replay_empty_store_is_honest(tmp_path):
+    cfg, _ = _cfg_with_state(tmp_path)
+    out, _ = drive_at(["/replay", "/quit"], PRESENT, cfg)
+    assert "no executions recorded yet" in out
+    assert "slice 0.0.5" in out
+
+
+def test_replay_unknown_execution(tmp_path):
+    cfg, _ = _cfg_with_state(tmp_path)
+    out, _ = drive_at(["/replay nope", "/quit"], PRESENT, cfg)
+    assert "no execution 'nope'" in out
+
+
+def test_replay_lists_and_renders_a_seeded_execution(tmp_path):
+    from generic_ml_workflow.core import eventtypes as et
+    from generic_ml_workflow.core.events import EventStore, new_execution_id
+
+    cfg, state = _cfg_with_state(tmp_path)
+    state.mkdir(parents=True)
+    store = EventStore(state / "gmlworkflow.db")
+    x = new_execution_id()
+    store.emit(
+        et.WorkflowExecutionStarted(
+            workflow_name="feature",
+            input_type="url",
+            commit="abc123",
+            branch="main",
+            engine_version="0.0.4.dev0",
+        ),
+        execution_id=x,
+    )
+    store.emit(et.RunInputProvided(name="ticket", value="test-001"), execution_id=x)
+    store.close()
+
+    # bare /replay lists it
+    out, _ = drive_at(["/replay", "/quit"], PRESENT, cfg)
+    assert "feature" in out and x[:12] in out and "[running]" in out
+
+    # /replay <prefix> renders the story
+    out2, _ = drive_at([f"/replay {x[:12]}", "/quit"], PRESENT, cfg)
+    assert "commit abc123" in out2
+    assert "workflow_execution.started" in out2 and "run_input.provided" in out2
+
+
+def test_status_shows_event_log_path(tmp_path):
+    cfg, state = _cfg_with_state(tmp_path)
+    out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)
+    assert "event log" in out
+    assert "gmlworkflow.db" in out

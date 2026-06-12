@@ -25,6 +25,10 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   `replay(execution_id)` returns typed events in order; `rebuild_projections`
   reconstructs every read-model from the log alone. A discipline test enforces the
   pointer-only payload rule (invariant 11): no payload bean may inline content.
+- `/replay` reads the real event store: bare `/replay` lists recorded executions
+  (honest empty state until `/run` exists in 0.0.5), `/replay <execution>` (full
+  id or a unique prefix) renders the stamp and the ordered event story. `/status`
+  now also shows the event-log database path.
 
 ## [0.0.3] - 2026-06-12
 
