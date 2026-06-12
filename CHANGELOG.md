@@ -9,6 +9,20 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- The **orchestrator** (`core.orchestrator`): runs an executable workflow end to
+  end (zero ML). Opens an execution (mints the historization id, reads the
+  meta-code **stamp**, emits `workflow_execution.started`), seeds the **context**
+  from the run interview's answers (`run_input.provided`), then walks the steps
+  maintaining the **context-fold** — resolving each bound artifact port from the
+  context, running executables in isolated per-step run folders, emitting
+  `step.*` and `artifact.created` (pointers), and adding durable products to the
+  context. Closes with `workflow_execution.completed`/`failed`. A token-free
+  **warm-up** verifies run-input / config / credential readiness before step one;
+  an invalid workflow never runs; a step failure stops the run; an interpretable
+  (shot) step stops honestly (the gmlcache seam is 0.0.6). Demo phase 1 — two
+  executable steps wired by a binding — runs end to end in tests.
+
 ## [0.0.4] - 2026-06-12
 
 ### Added
