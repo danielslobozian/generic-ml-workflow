@@ -444,3 +444,6 @@ question askable. The taxonomy and its ergonomics are not yet designed.
 16. git and gmlcache are mandatory runtime dependencies, checked at launch; the
     app refuses to open without them. The check is an edge concern (the launch
     wrapper), never the workspace's.
+17. The wheel ships engine code only -- never workflow definitions, configuration,
+    or other data. Meta-code is the user's; bundling any would violate the
+    engine/meta-code boundary. Examples, if shared, live in a separate repo.

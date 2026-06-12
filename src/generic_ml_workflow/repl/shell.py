@@ -46,7 +46,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from generic_ml_workflow import __version__
-from generic_ml_workflow.core import config, detect, paths
+from generic_ml_workflow.core import config, detect, discovery, paths
 from generic_ml_workflow.repl import banner
 
 ROADMAP_URL = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/docs/ROADMAP.md"
@@ -114,12 +114,12 @@ class Repl:
                 Repl._do_clients, "/clients", "re-run detection and list what gmlcache sees"
             ),
             "list": _Verb(
-                _stub("0.0.3", "listing workflow definitions"),
+                Repl._do_list,
                 "/list",
                 "list the workflow definitions found",
             ),
             "validate": _Verb(
-                _stub("0.0.3", "validating a workflow definition"),
+                Repl._do_validate,
                 "/validate <flow>",
                 "validate a workflow definition",
             ),
@@ -326,6 +326,71 @@ class Repl:
                 encoding="utf-8",
             )
         self._write(f"  initialized a git repo for your workflows: {flows}")
+
+    def _do_list(self, args: list[str]) -> bool:
+        flows = self._flows_dir()
+        if flows is None:
+            return True
+        found = discovery.discover_workflows(flows)
+        if not found:
+            self._write(f"no workflow definitions in {flows}")
+            self._write("author one there (a .yaml file) -- it's your meta-code, your git repo.")
+            return True
+        self._write(f"workflows in {flows}:")
+        for d in found:
+            if d.workflow is not None:
+                itype = d.workflow.input_type.value
+                self._write(f"  {d.name:<24} <{itype}>   ({d.path.name})")
+            else:
+                self._write(f"  {d.path.stem:<24} [does not load]   ({d.path.name})")
+        return True
+
+    def _do_validate(self, args: list[str]) -> bool:
+        if not args:
+            self._write("usage: /validate <flow>   (a name or filename in your flows folder)")
+            return True
+        flows = self._flows_dir()
+        if flows is None:
+            return True
+        target = args[0]
+        found = discovery.discover_workflows(flows)
+        match = next(
+            (
+                d
+                for d in found
+                if d.name == target or d.path.name == target or d.path.stem == target
+            ),
+            None,
+        )
+        if match is None:
+            self._write(f"no workflow '{target}' in {flows}. try '/list'.")
+            return True
+        if match.workflow is None:
+            self._write(f"'{target}' does not load:")
+            self._write(f"  {match.error}")
+            return True
+        result = match.workflow.validate()
+        if result.ok and not result.warnings:
+            self._write(f"'{match.name}' is valid -- no errors, no warnings.")
+            return True
+        if result.errors:
+            self._write(f"'{match.name}' has {len(result.errors)} error(s):")
+            for e in result.errors:
+                self._write(f"  \u2717 {e}")
+        if result.warnings:
+            self._write(f"'{match.name}' has {len(result.warnings)} warning(s):")
+            for w in result.warnings:
+                self._write(f"  ! {w}")
+        if result.ok:
+            self._write("(warnings only -- the workflow is loadable and runnable.)")
+        return True
+
+    def _flows_dir(self) -> Path | None:
+        """The configured flows folder, or None (with a message) if unresolved."""
+        if self.settings is None:
+            self._write("settings not resolved (startup did not run).")
+            return None
+        return self.settings.flows_dir
 
     def _do_status(self, args: list[str]) -> bool:
         s = self.settings

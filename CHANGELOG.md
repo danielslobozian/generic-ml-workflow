@@ -19,6 +19,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 - The first-run interview now initializes the flows folder as a git repo (the app
   drives git over your meta-code for versioning and time-travel) and seeds a
   `.gitignore`. An existing repo at that path is left untouched.
+- Workflow definitions load and validate (DESIGN.md SS7). The YAML loader builds a
+  typed `Workflow<InputType>` contract; steps declare **local ports** with a
+  requirement kind (run-input / config / credential / artifact), and the
+  workflow's **bindings** block is the only wiring. `Workflow.validate()` is a
+  token-free deduced-correctness pass: errors for an unbound required port, a
+  binding naming a product nothing contributes, a duplicate product name, or a
+  binding to a later product; and the **dead-branch lint** (a durable output no
+  later step consumes) as a warning. `/list` (definitions in your flows folder,
+  with their input types; honest empty state) and `/validate <flow>` go live.
 
 ### Changed
 - The "home opens even without gmlcache" behavior of 0.0.1 is superseded: gmlcache

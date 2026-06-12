@@ -1,0 +1,37 @@
+# Test fixture: a neutral public-page -> text -> summary workflow.
+# This is TEST DATA, never shipped in the wheel. It exercises both step natures
+# and a two-hop binding chain so the loader + validator are tested against a
+# realistic definition, not a toy.
+name: demo
+input_type: url
+steps:
+  - id: fetch
+    nature: executable
+    entrypoint: fetch_page
+    tier: low
+    inputs:
+      - {name: url, require: run_input}
+    outputs:
+      - {name: page, lifespan: durable, kind: file, filename: page.html}
+
+  - id: extract
+    nature: executable
+    entrypoint: extract_text
+    tier: low
+    inputs:
+      - {name: source, require: artifact}
+    outputs:
+      - {name: page_text, lifespan: durable, kind: file, filename: page_text.txt}
+
+  - id: summarize
+    nature: interpretable
+    cap: summarizer
+    tier: medium
+    inputs:
+      - {name: source_text, require: artifact}
+    outputs:
+      - {name: summary, lifespan: durable, kind: file, filename: summary.md}
+
+bindings:
+  - {step: extract, port: source, product: page}
+  - {step: summarize, port: source_text, product: page_text}

@@ -1,23 +1,31 @@
 # SPDX-FileCopyrightText: 2026 Daniel Slobozian
 # SPDX-License-Identifier: Apache-2.0
-"""The step contract (converted salvage groundwork): every distinct validation
-failure fails loud at load time. The full loader slice is 0.0.3."""
+"""The ports-and-bindings contract (DESIGN.md SS7): local step checks, and the
+workflow's deduced-correctness pass (errors + the dead-branch warning)."""
 
 import pytest
 
 from generic_ml_workflow.core.contract import (
-    InputSpec,
+    Binding,
+    InputPort,
+    InputType,
     Lifespan,
     OutputKind,
-    OutputSpec,
+    OutputPort,
+    Requirement,
     StepNature,
     StepSpec,
     Workflow,
+    WorkflowError,
 )
 
 
 def _out(name="doc", lifespan=Lifespan.DURABLE, kind=OutputKind.FILE):
-    return OutputSpec(name=name, lifespan=lifespan, kind=kind, filename=f"{name}.md")
+    return OutputPort(name=name, lifespan=lifespan, kind=kind, filename=f"{name}.md")
+
+
+def _art(name):
+    return InputPort(name=name, requirement=Requirement.ARTIFACT)
 
 
 def _shot(id="analyze", **kw):
@@ -32,58 +40,165 @@ def _exe(id="fetch", **kw):
     return StepSpec(id=id, nature=StepNature.EXECUTABLE, **kw)
 
 
-def test_input_must_have_exactly_one_source():
-    with pytest.raises(ValueError, match="exactly one source"):
-        InputSpec(name="x")
-    with pytest.raises(ValueError, match="exactly one source"):
-        InputSpec(name="x", from_literal=True, from_step="a.b")
-    InputSpec(name="x", from_literal=True)  # fine
-    InputSpec(name="x", from_step="a.b")  # fine
+def _wf(steps, bindings=(), name="w", input_type=InputType.FREESTYLE):
+    return Workflow(name=name, input_type=input_type, steps=tuple(steps), bindings=tuple(bindings))
+
+
+# --- local step validity -----------------------------------------------------
 
 
 def test_interpretable_step_requires_a_cap():
-    with pytest.raises(ValueError, match="must declare a cap"):
+    with pytest.raises(WorkflowError, match="must declare a cap"):
         StepSpec(id="s", nature=StepNature.INTERPRETABLE).validate()
 
 
 def test_executable_step_requires_an_entrypoint():
-    with pytest.raises(ValueError, match="must declare an entrypoint"):
+    with pytest.raises(WorkflowError, match="must declare an entrypoint"):
         StepSpec(id="s", nature=StepNature.EXECUTABLE).validate()
 
 
 def test_duplicate_output_names_rejected():
-    s = _shot(outputs=(_out("a"), _out("a")))
-    with pytest.raises(ValueError, match="duplicate output names"):
-        s.validate()
+    with pytest.raises(WorkflowError, match="duplicate output names"):
+        _shot(outputs=(_out("a"), _out("a"))).validate()
+
+
+def test_duplicate_input_ports_rejected():
+    with pytest.raises(WorkflowError, match="duplicate input port"):
+        _shot(inputs=(_art("x"), _art("x"))).validate()
 
 
 def test_at_most_one_questions_output():
-    qs = _out("q1", Lifespan.TRANSPORT, OutputKind.QUESTIONS)
-    qs2 = OutputSpec(
-        name="q2", lifespan=Lifespan.TRANSPORT, kind=OutputKind.QUESTIONS, filename="q2.json"
+    q1 = _out("q1", Lifespan.TRANSPORT, OutputKind.QUESTIONS)
+    q2 = _out("q2", Lifespan.TRANSPORT, OutputKind.QUESTIONS)
+    with pytest.raises(WorkflowError, match="more than one questions output"):
+        _shot(outputs=(q1, q2)).validate()
+
+
+# --- workflow-level deduced correctness --------------------------------------
+
+
+def test_empty_workflow_is_an_error():
+    assert "has no steps" in _wf([]).validate().errors[0]
+
+
+def test_a_valid_two_hop_chain_passes_clean():
+    steps = [
+        _exe("fetch", outputs=(_out("page"),)),
+        _shot("summarize", inputs=(_art("text"),), outputs=(_out("summary"),)),
+    ]
+    # summarize consumes fetch's product; summary is terminal (unconsumed -> warning)
+    binds = [Binding("summarize", "text", "page")]
+    result = _wf(steps, binds).validate()
+    assert result.ok  # no errors
+    assert any("summary" in w for w in result.warnings)  # terminal deliverable lint
+
+
+def test_unbound_required_port_is_an_error():
+    steps = [_shot("summarize", inputs=(_art("text"),), outputs=(_out("summary"),))]
+    result = _wf(steps).validate()  # no binding for 'text'
+    assert not result.ok
+    assert any("nothing is bound to it" in e for e in result.errors)
+
+
+def test_binding_to_a_product_nothing_contributes_is_an_error():
+    steps = [_shot("summarize", inputs=(_art("text"),), outputs=(_out("summary"),))]
+    binds = [Binding("summarize", "text", "ghost")]
+    result = _wf(steps, binds).validate()
+    assert any("nothing contributes" in e for e in result.errors)
+
+
+def test_binding_to_a_later_product_is_an_error():
+    # summarize (step 1) consumes a product only produced by fetch (step 2) -- ordering
+    steps = [
+        _shot("summarize", inputs=(_art("text"),), outputs=(_out("summary"),)),
+        _exe("fetch", outputs=(_out("page"),)),
+    ]
+    binds = [Binding("summarize", "text", "page")]
+    result = _wf(steps, binds).validate()
+    assert any("nothing contributes before it" in e for e in result.errors)
+
+
+def test_two_products_under_one_name_is_an_error():
+    steps = [
+        _exe("a", outputs=(_out("page"),)),
+        _exe("b", outputs=(_out("page"),)),
+    ]
+    result = _wf(steps).validate()
+    assert any("product names are unique" in e for e in result.errors)
+
+
+def test_an_update_uses_a_new_name_and_is_fine():
+    steps = [
+        _exe("fetch", outputs=(_out("page"),)),
+        _exe("enrich", inputs=(_art("p"),), outputs=(_out("page_enriched"),)),
+        _shot("use", inputs=(_art("e"),), outputs=(_out("final"),)),
+    ]
+    binds = [
+        Binding("enrich", "p", "page"),
+        Binding("use", "e", "page_enriched"),
+    ]
+    assert _wf(steps, binds).validate().ok
+
+
+def test_dead_branch_lint_warns_on_a_forgotten_rebind():
+    # enrich produces page_enriched, but 'use' still consumes the old 'page' --
+    # page_enriched hangs unconsumed: the classic insertion bug, surfaced.
+    steps = [
+        _exe("fetch", outputs=(_out("page"),)),
+        _exe("enrich", inputs=(_art("p"),), outputs=(_out("page_enriched"),)),
+        _shot("use", inputs=(_art("e"),), outputs=(_out("final"),)),
+    ]
+    binds = [
+        Binding("enrich", "p", "page"),
+        Binding("use", "e", "page"),  # forgot to rebind to page_enriched
+    ]
+    result = _wf(steps, binds).validate()
+    assert result.ok  # it's a warning, not an error
+    assert any("page_enriched" in w and "never consumed" in w for w in result.warnings)
+
+
+def test_duplicate_binding_for_one_port_is_an_error():
+    steps = [
+        _exe("fetch", outputs=(_out("page"),)),
+        _shot("use", inputs=(_art("t"),), outputs=(_out("final"),)),
+    ]
+    binds = [Binding("use", "t", "page"), Binding("use", "t", "page")]
+    assert any("bound more than once" in e for e in _wf(steps, binds).validate().errors)
+
+
+# --- computed requirements (for the run interview, slice 0.0.5) ---------------
+
+
+def test_run_inputs_are_the_deduped_union():
+    steps = [
+        StepSpec(
+            id="a",
+            nature=StepNature.EXECUTABLE,
+            entrypoint="e",
+            inputs=(InputPort("url", Requirement.RUN_INPUT),),
+            outputs=(_out("x"),),
+        ),
+        StepSpec(
+            id="b",
+            nature=StepNature.EXECUTABLE,
+            entrypoint="e",
+            inputs=(
+                InputPort("url", Requirement.RUN_INPUT),  # same name -> deduped
+                InputPort("depth", Requirement.RUN_INPUT),
+            ),
+            outputs=(_out("y"),),
+        ),
+    ]
+    wf = _wf(steps)
+    assert wf.run_inputs() == ("url", "depth")
+
+
+def test_credential_roles_collected():
+    step = StepSpec(
+        id="fetch",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="e",
+        inputs=(InputPort("token", Requirement.CREDENTIAL),),
+        outputs=(_out("x"),),
     )
-    with pytest.raises(ValueError, match="more than one questions output"):
-        _shot(outputs=(qs, qs2)).validate()
-
-
-def test_workflow_rejects_empty_and_duplicate_steps():
-    with pytest.raises(ValueError, match="has no steps"):
-        Workflow(name="w", steps=()).validate()
-    with pytest.raises(ValueError, match="repeats step id"):
-        Workflow(name="w", steps=(_exe("a"), _exe("a"))).validate()
-
-
-def test_workflow_wiring_must_reference_an_earlier_step():
-    wired = _shot("analyze", inputs=(InputSpec(name="page", from_step="fetch.page"),))
-    Workflow(name="w", steps=(_exe("fetch"), wired)).validate()  # fine: earlier
-    with pytest.raises(ValueError, match="unknown step"):
-        Workflow(name="w", steps=(wired,)).validate()
-    with pytest.raises(ValueError, match="does not run earlier"):
-        Workflow(name="w", steps=(wired, _exe("fetch"))).validate()
-
-
-def test_helpers_durable_and_questions():
-    qs = _out("questions", Lifespan.TRANSPORT, OutputKind.QUESTIONS)
-    s = _shot(outputs=(_out("doc"), qs))
-    assert [o.name for o in s.durable_outputs()] == ["doc"]
-    assert s.questions_output().name == "questions"
+    assert _wf([step]).credential_roles() == ("token",)

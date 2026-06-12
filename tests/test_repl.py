@@ -23,6 +23,8 @@ def drive(lines, detection):
     return "\n".join(out)
 
 
+_DATA = Path(__file__).parent / "data"
+
 PRESENT = Detection(
     gmlcache_present=True,
     clients=(
@@ -70,8 +72,6 @@ def test_stub_verbs_answer_not_yet_with_the_slice():
 
 def test_every_stub_names_its_slice():
     for verb, slice_id in [
-        ("/list", "0.0.3"),
-        ("/validate", "0.0.3"),
         ("/replay", "0.0.4"),
         ("/cost", "0.0.10"),
         ("/export", "0.1.2"),
@@ -235,3 +235,75 @@ def test_banner_choice_persists_into_config(tmp_path):
     assert 'banner = "minimal"' in cfg.read_text(encoding="utf-8")
     out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)  # next launch uses it
     assert "minimal" in out and "(config)" in out
+
+
+# --- 0.0.3: /list and /validate -----------------------------------------------
+
+
+def _cfg_with_flows(tmp_path, flows):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        f'[paths]\nflows = "{flows.as_posix()}"\n[ui]\nbanner = "panel"\n', encoding="utf-8"
+    )
+    return cfg
+
+
+def test_list_empty_flows_is_honest(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/list", "/quit"], PRESENT, cfg)
+    assert "no workflow definitions" in out
+    assert "your meta-code" in out
+
+
+def test_list_shows_definitions_with_input_type(tmp_path):
+    import shutil
+
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    shutil.copy(_DATA / "demo.yaml", flows / "demo.yaml")
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/list", "/quit"], PRESENT, cfg)
+    assert "demo" in out and "<url>" in out
+
+
+def test_validate_clean_workflow(tmp_path):
+    import shutil
+
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    shutil.copy(_DATA / "demo.yaml", flows / "demo.yaml")
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/validate demo", "/quit"], PRESENT, cfg)
+    # demo is valid; 'summary' is a terminal deliverable -> a warning, not an error
+    assert "warning" in out or "is valid" in out
+    assert "\u2717" not in out  # no error crosses
+
+
+def test_validate_reports_errors(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    # an interpretable step with no cap -> a hard error
+    (flows / "bad.yaml").write_text(
+        "name: bad\nsteps:\n  - {id: s, nature: interpretable}\n", encoding="utf-8"
+    )
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/validate bad", "/quit"], PRESENT, cfg)
+    assert "error" in out and "must declare a cap" in out
+
+
+def test_validate_unknown_flow(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/validate ghost", "/quit"], PRESENT, cfg)
+    assert "no workflow 'ghost'" in out
+
+
+def test_validate_without_argument_shows_usage(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    cfg = _cfg_with_flows(tmp_path, flows)
+    out, _ = drive_at(["/validate", "/quit"], PRESENT, cfg)
+    assert "usage:" in out

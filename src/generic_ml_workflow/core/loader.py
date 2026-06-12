@@ -1,14 +1,34 @@
 # SPDX-FileCopyrightText: 2026 Daniel Slobozian
 # SPDX-License-Identifier: Apache-2.0
-"""loader.py -- read a workflow (declarative YAML data) into validated contract
-objects. The workflow is DATA: the wiring between steps lives in each input's
-``from``, so a workflow is reconfigurable without touching code. A visual canvas,
-if ever built, would be a view over exactly this file.
+"""loader.py -- read a workflow (declarative YAML data) into the validated
+contract. The workflow is DATA: steps declare local ports; the workflow's
+``bindings`` block is the only wiring (DESIGN.md SS7). A visual canvas, if ever
+built, would be a view over exactly this file.
 
-Groundwork note: this module is converted salvage. Its real slice is 0.0.3, which
-adds the typed-input contract, the ports-and-bindings wiring of DESIGN.md §7 with
-precise load errors and the dead-branch lint, ``/list`` and ``/validate``, and
-the bundled demo definition.
+YAML shape::
+
+    name: demo
+    input_type: url
+    steps:
+      - id: fetch
+        nature: executable
+        entrypoint: fetch_page
+        tier: low
+        inputs:
+          - {name: url, require: run_input}
+        outputs:
+          - {name: page, lifespan: durable, kind: file, filename: page.html}
+      - id: summarize
+        nature: interpretable
+        cap: summarizer
+        inputs:
+          - {name: source_text, require: artifact}
+        outputs:
+          - {name: summary, lifespan: durable, kind: file, filename: summary.md}
+    bindings:
+      - {step: summarize, port: source_text, product: page_text}
+
+Every malformed field raises ``WorkflowError`` with the file name and the reason.
 """
 
 from __future__ import annotations
@@ -18,40 +38,74 @@ from pathlib import Path
 import yaml
 
 from generic_ml_workflow.core.contract import (
-    InputSpec,
+    Binding,
+    InputPort,
+    InputType,
     Lifespan,
     OutputKind,
-    OutputSpec,
+    OutputPort,
+    Requirement,
     StepNature,
     StepSpec,
     Tier,
     Workflow,
+    WorkflowError,
 )
 
 
 def load_workflow(path: str | Path) -> Workflow:
+    """Parse a workflow YAML into the contract. Raises WorkflowError on any
+    malformed field; does NOT run validate() -- the caller decides when to."""
     path = Path(path)
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise WorkflowError(f"{path}: not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
-        raise ValueError(f"{path}: workflow must be a mapping")
+        raise WorkflowError(f"{path}: a workflow must be a mapping")
+
     name = data.get("name") or path.stem
-    steps = tuple(_step(s) for s in (data.get("steps") or []))
-    wf = Workflow(name=name, steps=steps)
-    wf.validate()
-    return wf
+    raw_type = data.get("input_type", "freestyle")
+    try:
+        input_type = InputType(raw_type)
+    except ValueError as exc:
+        raise WorkflowError(
+            f"{path}: unknown input_type '{raw_type}'"
+            f" (expected one of: {', '.join(t.value for t in InputType)})"
+        ) from exc
+
+    steps = tuple(_step(path, s) for s in (data.get("steps") or []))
+    bindings = tuple(_binding(path, b) for b in (data.get("bindings") or []))
+    return Workflow(name=name, input_type=input_type, steps=steps, bindings=bindings)
 
 
-def _step(s: dict) -> StepSpec:
-    nature = StepNature(s["nature"])
-    inputs = tuple(_input(i) for i in (s.get("inputs") or []))
-    outputs = tuple(_output(o) for o in (s.get("outputs") or []))
+def _enum(path: Path, cls, value, field: str):
+    try:
+        return cls(value)
+    except ValueError as exc:
+        allowed = ", ".join(m.value for m in cls)
+        raise WorkflowError(
+            f"{path}: invalid {field} '{value}' (expected one of: {allowed})"
+        ) from exc
+
+
+def _require(path: Path, mapping: dict, key: str, ctx: str):
+    if key not in mapping:
+        raise WorkflowError(f"{path}: {ctx} is missing required field '{key}'")
+    return mapping[key]
+
+
+def _step(path: Path, s: dict) -> StepSpec:
+    if not isinstance(s, dict):
+        raise WorkflowError(f"{path}: each step must be a mapping, got {type(s).__name__}")
+    sid = _require(path, s, "id", "a step")
+    nature = _enum(path, StepNature, _require(path, s, "nature", f"step '{sid}'"), "nature")
     return StepSpec(
-        id=s["id"],
+        id=sid,
         nature=nature,
-        tier=Tier(s.get("tier", "medium")),
-        inputs=inputs,
-        outputs=outputs,
-        needs=tuple(s.get("needs") or ()),
+        tier=_enum(path, Tier, s.get("tier", "medium"), "tier"),
+        inputs=tuple(_input(path, sid, i) for i in (s.get("inputs") or [])),
+        outputs=tuple(_output(path, sid, o) for o in (s.get("outputs") or [])),
         cap=s.get("cap"),
         methodology=s.get("methodology"),
         entrypoint=s.get("entrypoint"),
@@ -59,17 +113,34 @@ def _step(s: dict) -> StepSpec:
     )
 
 
-def _input(i: dict) -> InputSpec:
-    src = i.get("from")
-    if src == "literal":
-        return InputSpec(name=i["name"], from_literal=True)
-    return InputSpec(name=i["name"], from_step=src)  # "<step>.<output>"
+def _input(path: Path, sid: str, i: dict) -> InputPort:
+    name = _require(path, i, "name", f"an input of step '{sid}'")
+    requirement = _enum(
+        path,
+        Requirement,
+        _require(path, i, "require", f"input '{name}' of step '{sid}'"),
+        "require",
+    )
+    return InputPort(name=name, requirement=requirement)
 
 
-def _output(o: dict) -> OutputSpec:
-    return OutputSpec(
-        name=o["name"],
-        lifespan=Lifespan(o["lifespan"]),
-        kind=OutputKind(o["kind"]),
-        filename=o["filename"],
+def _output(path: Path, sid: str, o: dict) -> OutputPort:
+    name = _require(path, o, "name", f"an output of step '{sid}'")
+    return OutputPort(
+        name=name,
+        lifespan=_enum(
+            path, Lifespan, _require(path, o, "lifespan", f"output '{name}'"), "lifespan"
+        ),
+        kind=_enum(path, OutputKind, _require(path, o, "kind", f"output '{name}'"), "kind"),
+        filename=_require(path, o, "filename", f"output '{name}' of step '{sid}'"),
+    )
+
+
+def _binding(path: Path, b: dict) -> Binding:
+    if not isinstance(b, dict):
+        raise WorkflowError(f"{path}: each binding must be a mapping")
+    return Binding(
+        step_id=_require(path, b, "step", "a binding"),
+        port=_require(path, b, "port", "a binding"),
+        product=_require(path, b, "product", "a binding"),
     )
