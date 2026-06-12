@@ -9,6 +9,8 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-06-12
+
 ### Added
 - The **orchestrator** (`core.orchestrator`): runs an executable workflow end to
   end (zero ML). Opens an execution (mints the historization id, reads the
@@ -148,7 +150,8 @@ honest about what it can't do yet.
   SECURITY, GOVERNANCE, CONTRIBUTING, CI across ubuntu/macos/windows × Python
   3.11–3.13 (tests + ruff check + format check), issue/PR templates, dependabot.
 
-[Unreleased]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.1...v0.0.2
