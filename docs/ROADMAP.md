@@ -15,9 +15,10 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.2 — config + first-run interview** is the latest release. 0.0.1 ("a home
-that opens") and 0.0.2 are published; next up: **0.0.3 — workflow definitions
-load and validate.**
+**0.0.3 — workflow definitions load and validate** is the latest release
+(it also folded in a launch-time mandatory-dependency gate for git + gmlcache and
+flows-folder git-init, added along the way). 0.0.1–0.0.3 are published; next up:
+**0.0.4 — the event spine.**
 
 ---
 
