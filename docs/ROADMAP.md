@@ -15,10 +15,10 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.3 — workflow definitions load and validate** is the latest release
-(it also folded in a launch-time mandatory-dependency gate for git + gmlcache and
-flows-folder git-init, added along the way). 0.0.1–0.0.3 are published; next up:
-**0.0.4 — the event spine.**
+**0.0.4 — the event spine + executable building blocks** is the latest release
+(the event-sourced store and vocabulary, `/replay`, plus the stamping primitive
+and the executable-step runner). 0.0.1–0.0.4 are published; next up:
+**0.0.5 — executable steps run** (the orchestrator and the first end-to-end run).
 
 ---
 
@@ -64,29 +64,38 @@ The app exists, installs, launches, and is honest about what it can't do yet.
 - **Tests:** loader happy path; every distinct contract violation; binding/graph
   wiring errors; the dead-branch warning; bundled demo validates.
 
-### 0.0.4 — the event spine
+### 0.0.4 — the event spine + the executable building blocks
 - Append-only SQLite event store + projections; events carry pointers
-  (path + sha256), never content. Run/StepExecution records.
+  (path + sha256), never content. The typed, self-describing event vocabulary
+  (closed enum, payload beans, registry, `event_types`/`describe`); the
+  `execution_id` historization key; `workflow_executions`/`jobs` projections with
+  the commit/branch/engine-version stamp; project-on-append; `rebuild_projections`.
 - `/replay <execution>` and `/status` read real (if sparse) data.
+- **Execution stamping primitive:** `core.stamp` reads the flows-repo commit/branch
+  (read-only; "unversioned" when not a repo), plus the engine version — the
+  DESIGN §13 foundation, because append-only history cannot be back-filled.
+- **The executable-step runner** (`core.runner`, user-supplied origin): an isolated
+  per-step run folder, declared-input materialization, declared-output collection
+  + fingerprinting, honest failure on a missing output.
 - **Tests:** append/replay round-trip; projection correctness; pointer-only
-  payload rule enforced.
+  payload rule enforced; vocabulary round-trip + self-description; stamp reading;
+  runner isolation/collection/failure.
 
 ### 0.0.5 — executable steps run (first end-to-end run, zero ML)
-- The executable nature, **user-supplied origin**: declared invocation, isolated
-  per-step run folder, declared-output collection, declared-input materialization.
-- **Execution stamping from day one:** every execution records the meta-code
-  commit/branch (when the flows folder is a git repo; "unversioned" recorded
-  honestly otherwise) and the engine version. The time-travel machinery comes much
-  later; the history it needs starts here, because append-only history cannot be
-  back-filled.
-- The run interview: `/run` lists workflows, then asks for the **computed**
-  interview — the union of the steps' unsatisfied run-inputs — with validation;
-  the **warm-up** verifies configuration requirements before step one fires;
-  progress per step; outputs land in the app workspace.
+- The **orchestrator**: opens an execution (mints the id, reads the stamp, emits
+  `workflow_execution.started`), runs the **computed** run interview (the union of
+  the steps' unsatisfied run-inputs, each emitted as `run_input.provided`), the
+  **warm-up** (verifies configuration/credential requirements before step one,
+  token-free), then walks the steps maintaining the **context-fold** — resolving
+  each bound artifact port from the context, running executables via `core.runner`,
+  emitting `step.*` and `artifact.created`, durable outputs landing in the workspace.
+  Stamps every execution from day one.
+- `/run`: lists workflows, drives the interview at the prompt, shows per-step
+  progress; `/replay` now lights up with real stories.
 - Demo phase 1 runs: a supplied script fetches a public web page → a transform
-  step extracts text. Two steps, wired by a file, no model involved.
-- **Tests:** isolation (the invocation sees only its run folder); output
-  collection; missing-declared-output is a step failure; scripted full run.
+  step extracts text. Two steps, wired by a binding, no model involved.
+- **Tests:** the computed interview; warm-up readiness; context-fold resolution;
+  a scripted full demo run end-to-end; `/replay` of a real execution.
 
 ### 0.0.6 — interpretable steps run (the gmlcache seam)
 - The shot path: engine builds `[context, prompt, files]`, resolves nothing fancy
