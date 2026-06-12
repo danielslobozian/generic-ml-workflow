@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit import PromptSession
@@ -44,7 +45,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from generic_ml_workflow import __version__
-from generic_ml_workflow.core import detect
+from generic_ml_workflow.core import config, detect, paths
 from generic_ml_workflow.repl import banner
 
 ROADMAP_URL = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/docs/ROADMAP.md"
@@ -96,12 +97,16 @@ class Repl:
         read: Callable[[str], str | None] | None = None,
         write: Callable[[str], None] | None = None,
         discover: Callable[[], detect.Detection] | None = None,
+        config_file: Path | None = None,
     ):
         self._read = read or _default_read
         self._write = write or print
         self._rich_input = read is None  # prompt_toolkit only on the real stdin path
         self._discover = discover or detect.discover
+        self._config_file = config_file  # None -> resolved at startup (env-aware)
         self.detection: detect.Detection | None = None
+        self.settings: config.Settings | None = None
+        self._session: dict[str, object] = {}  # in-session overrides (the "flag" layer)
         self._banner_style = banner.DEFAULT
         self._verbs: dict[str, _Verb] = {
             "clients": _Verb(
@@ -128,7 +133,7 @@ class Repl:
                 "reconstruct an execution from the event log",
             ),
             "status": _Verb(
-                _stub("0.0.2", "showing effective settings"),
+                Repl._do_status,
                 "/status",
                 "each effective setting, with its source",
             ),
@@ -157,7 +162,10 @@ class Repl:
 
     # --- lifecycle ---
     def run(self) -> None:
+        self._startup_config()
         self._banner()
+        if self.settings is not None and self.settings.config_file is None:
+            self._first_run_interview()
         self._startup_detection()
         reader = self._build_reader()
         keep = True
@@ -206,6 +214,111 @@ class Repl:
     def _use_color(self) -> bool:
         return self._rich_input and sys.stdin.isatty()
 
+    # --- configuration -------------------------------------------------------
+    def _startup_config(self) -> None:
+        """Resolve the effective settings. A broken config is reported loudly but
+        does not kill the workspace: built-in defaults carry the session and
+        nothing is written."""
+        try:
+            self.settings = config.load(self._config_file, session=self._session)
+        except config.ConfigError as exc:
+            self._write(f"! config problem: {exc}")
+            self._write("  running on built-in defaults this session; nothing will be written.")
+            absent = Path("__gmlworkflow_no_config__")  # never a real file
+            self.settings = config.load(absent, session=self._session, env={})
+            # keep the broken file out of reach: mark as absent-but-do-not-interview
+            self._config_broken = True
+            return
+        self._config_broken = False
+        self._banner_style = self.settings.banner
+
+    def _first_run_interview(self) -> None:
+        """No config found -> propose, ask, and only then write (the one file the
+        app ever creates unasked-for-content -- and it asks first). Skipping (EOF
+        or empty abort) writes nothing and the session runs on defaults."""
+        if getattr(self, "_config_broken", False):
+            return
+        cfg_path = self._config_file if self._config_file is not None else paths.config_path()
+        defaults = paths.Paths()
+        self._write(f"no configuration found at {cfg_path}")
+        self._write("first run? let's pick where the app keeps its things:")
+        self._write("  1) standard OS folders (recommended)")
+        self._write("  2) one single folder for everything")
+        self._write("  3) custom paths")
+        choice = self._read("choose 1-3 (Enter = 1, Ctrl-D = skip, nothing written): ")
+        if choice is None:
+            self._write("skipped -- nothing written; built-in defaults carry this session.")
+            self._write("")
+            return
+        choice = choice.strip() or "1"
+        if choice == "1":
+            flows, state, ws = defaults.flows_dir, defaults.state_dir, defaults.workspace_dir
+        elif choice == "2":
+            base = self._ask_path("one folder for everything", defaults.flows_dir.parent)
+            if base is None:
+                self._write("skipped -- nothing written; built-in defaults carry this session.")
+                self._write("")
+                return
+            flows, state, ws = base / "flows", base / "state", base / "workspace"
+        elif choice == "3":
+            flows = self._ask_path("flows folder (your meta-code)", defaults.flows_dir)
+            state = flows and self._ask_path("state folder (event db, logs)", defaults.state_dir)
+            ws = state and self._ask_path("workspace folder (run outputs)", defaults.workspace_dir)
+            if ws is None:
+                self._write("skipped -- nothing written; built-in defaults carry this session.")
+                self._write("")
+                return
+        else:
+            self._write(f"{choice!r} is not one of 1-3 -- nothing written; defaults carry this")
+            self._write("session, and the interview returns at next launch.")
+            self._write("")
+            return
+        text = config.initial_config_text(flows, state, ws, banner=self._banner_style)
+        config.write_initial_config(cfg_path, text)
+        for p in (flows, state, ws):
+            p.mkdir(parents=True, exist_ok=True)
+        self._write(f"wrote {cfg_path} (documented inline; edit anytime) and created the folders.")
+        self._write("")
+        self._startup_config()  # reload so /status shows the file as the source
+
+    def _ask_path(self, what: str, default: Path) -> Path | None:
+        """Ask for an absolute path (~ allowed). Relative answers are re-asked --
+        the app is location-blind and resolves nothing against the cwd."""
+        for _ in range(3):
+            raw = self._read(f"{what} [{default}]: ")
+            if raw is None:
+                return None
+            raw = raw.strip()
+            if not raw:
+                return default
+            p = Path(raw).expanduser()
+            if p.is_absolute():
+                return p
+            self._write("please give an absolute path (the app never resolves against the cwd).")
+        return None
+
+    def _do_status(self, args: list[str]) -> bool:
+        s = self.settings
+        if s is None:
+            self._write("settings not resolved (startup did not run).")
+            return True
+        cfg_path = self._config_file if self._config_file is not None else paths.config_path()
+        if s.config_file is not None:
+            self._write(f"config file: {s.config_file}")
+        elif getattr(self, "_config_broken", False):
+            self._write(f"config file: {cfg_path}  (present but BROKEN -- defaults in use)")
+        else:
+            self._write(f"config file: {cfg_path}  (absent -- interview at next launch)")
+        rows = [
+            ("flows", s.flows_dir, s.sources["flows_dir"]),
+            ("state", s.state_dir, s.sources["state_dir"]),
+            ("workspace", s.workspace_dir, s.sources["workspace_dir"]),
+            ("banner", self._banner_style, s.sources["banner"]),
+        ]
+        for name, value, source in rows:
+            self._write(f"  {name:<10} {str(value):<52} ({source})")
+        return True
+
     def _startup_detection(self) -> None:
         self._write("asking gmlcache which clients are installed...")
         self.detection = self._discover()
@@ -234,8 +347,8 @@ class Repl:
         if d.clients and not any(c.present for c in d.clients):
             self._write("  (no client installed yet -- detection is advisory, nothing is gated)")
         self._write("")
-        self._write("this is slice 0.0.1: the home opens; running workflows is on the roadmap.")
-        self._write("'/help' lists the verbs; stubs say which slice brings them to life.")
+        self._write("running workflows is still ahead on the roadmap; '/help' lists the verbs,")
+        self._write("and each stub says which slice brings it to life.")
         self._write("")
 
     # --- dispatch ---
@@ -270,7 +383,12 @@ class Repl:
             return True
         if arg in banner.names():
             self._banner_style = arg
-            self._write(f"banner -> {arg}  (persisting the choice arrives with 0.0.2)")
+            self._session["banner"] = arg
+            if self.settings is not None and self.settings.config_file is not None:
+                config.set_value(self.settings.config_file, "banner", arg)
+                self._write(f"banner -> {arg}  (saved to {self.settings.config_file.name})")
+            else:
+                self._write(f"banner -> {arg}  (for this session; no config file to save into yet)")
             self._write(banner.render(self._banner_style, __version__, color=self._use_color()))
             return True
         self._write(f"no such banner {arg!r}. available: {', '.join(banner.names())}")

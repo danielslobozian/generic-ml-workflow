@@ -10,14 +10,13 @@ overridable by exactly one environment variable, ``GMLWORKFLOW_CONFIG``. Every
 *other* path -- state, flows, workspace -- is a setting inside that config.
 
 This module only *resolves* locations; it never creates them. Directory creation
-happens solely through :meth:`Paths.ensure_runtime`, called from an explicit,
-user-answered flow (the first-run interview arrives in the 0.0.2 slice). Until the
-interview exists, nothing in the app calls ``ensure_runtime`` -- resolving must
-stay free of side effects (design invariant 15: no auto-written files beyond the
-answered-for config).
+happens solely through :meth:`Paths.ensure_runtime` or the first-run interview --
+both explicit, user-answered flows. Resolving stays free of side effects (design
+invariant 15: no auto-written files beyond the answered-for config).
 
-The :class:`Paths` defaults below mirror what the interview's "standard OS folders"
-choice will write; with a config present, every root comes from the config instead.
+The :class:`Paths` defaults below are what the interview's "standard OS folders"
+choice writes; with a config present, every root comes from the config instead
+(see ``core.config``).
 """
 
 from __future__ import annotations
@@ -76,10 +75,3 @@ class Paths:
         for p in (self.state_dir, self.log_dir, self.workspace_dir):
             p.mkdir(parents=True, exist_ok=True)
         return self
-
-
-def resolve() -> Paths:
-    """Resolve the working locations. Until the config slice (0.0.2) lands, this
-    returns the standard-OS-folders defaults; reading roots from the config file
-    is that slice's job."""
-    return Paths()

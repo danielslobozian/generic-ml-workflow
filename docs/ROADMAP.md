@@ -15,7 +15,9 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**Pre-0.0.1.** Nothing published yet.
+**0.0.2 — config + first-run interview** is the latest release. 0.0.1 ("a home
+that opens") and 0.0.2 are published; next up: **0.0.3 — workflow definitions
+load and validate.**
 
 ---
 

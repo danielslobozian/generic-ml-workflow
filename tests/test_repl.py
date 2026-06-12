@@ -70,7 +70,6 @@ def test_every_stub_names_its_slice():
         ("/list", "0.0.3"),
         ("/validate", "0.0.3"),
         ("/replay", "0.0.4"),
-        ("/status", "0.0.2"),
         ("/cost", "0.0.10"),
         ("/export", "0.1.2"),
         ("/companion", "0.3.1"),
@@ -121,3 +120,100 @@ def test_banner_verb_switches_and_previews():
     assert "available: panel, minimal" in out
     assert "banner -> minimal" in out
     assert "no such banner" in out
+
+
+# --- 0.0.2: config, /status, the first-run interview --------------------------
+
+
+def drive_at(lines, detection, config_file):
+    script = iter(lines)
+    out: list[str] = []
+    repl = Repl(
+        read=lambda p: next(script, None),
+        write=out.append,
+        discover=lambda: detection,
+        config_file=config_file,
+    )
+    repl.run()
+    return "\n".join(out), repl
+
+
+def test_status_shows_each_setting_with_source(tmp_path, monkeypatch):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[paths]\nflows = "/cfg/flows"\n', encoding="utf-8")
+    monkeypatch.setenv("GMLWORKFLOW_STATE", "/env/state")
+    out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)
+    assert "config file: " + str(cfg) in out
+    assert "/cfg/flows" in out and "(config)" in out
+    assert "/env/state" in out and "(env)" in out
+    assert "(default)" in out  # workspace fell through
+
+
+def test_interview_standard_choice_writes_config_and_creates_folders(tmp_path):
+    cfg = tmp_path / "cfg" / "config.toml"
+    out, repl = drive_at(["1", "/status", "/quit"], PRESENT, cfg)
+    assert "no configuration found" in out
+    assert cfg.is_file()
+    assert "wrote " + str(cfg) in out
+    assert repl.settings.config_file == cfg  # reloaded: the file is now the source
+    assert "interview" not in drive_at(["/quit"], PRESENT, cfg)[0]  # second launch skips it
+
+
+def test_interview_single_folder_choice(tmp_path):
+    cfg = tmp_path / "config.toml"
+    base = tmp_path / "everything"
+    out, repl = drive_at(["2", str(base), "/quit"], PRESENT, cfg)
+    assert (base / "flows").is_dir() and (base / "state").is_dir()
+    assert repl.settings.flows_dir == base / "flows"
+
+
+def test_interview_custom_paths_rejects_relative(tmp_path):
+    cfg = tmp_path / "config.toml"
+    out, repl = drive_at(
+        [
+            "3",
+            "relative/flows",
+            str(tmp_path / "F"),
+            str(tmp_path / "S"),
+            str(tmp_path / "W"),
+            "/quit",
+        ],
+        PRESENT,
+        cfg,
+    )
+    assert "absolute path" in out
+    assert repl.settings.flows_dir == tmp_path / "F"
+    assert (tmp_path / "W").is_dir()
+
+
+def test_interview_skip_writes_nothing(tmp_path):
+    cfg = tmp_path / "config.toml"
+    out, _ = drive_at([], PRESENT, cfg)  # immediate EOF at the choice prompt
+    assert "nothing written" in out
+    assert not cfg.exists()
+    before = set(tmp_path.iterdir())
+    assert before == set(tmp_path.iterdir())  # and no folders appeared
+
+
+def test_interview_invalid_choice_writes_nothing(tmp_path):
+    cfg = tmp_path / "config.toml"
+    out, _ = drive_at(["7", "/quit"], PRESENT, cfg)
+    assert "not one of 1-3" in out and not cfg.exists()
+
+
+def test_broken_config_is_loud_but_survivable(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("not [ valid", encoding="utf-8")
+    out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)
+    assert "config problem" in out
+    assert "BROKEN" in out
+    assert "bye." in out  # the workspace survived
+    assert "not valid TOML" in out
+
+
+def test_banner_choice_persists_into_config(tmp_path):
+    cfg = tmp_path / "config.toml"
+    drive_at(["1", "/banner minimal", "/quit"], PRESENT, cfg)
+    assert 'banner = "minimal"' in cfg.read_text(encoding="utf-8")
+    out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)  # next launch uses it
+    assert "minimal" in out and "(config)" in out

@@ -11,9 +11,9 @@ It is **not** a CLI you invoke with arguments: there is no usage model in which 
 human types a workflow name and flags on a shell command line. Launching it *is*
 the interface.
 
-> **Status: alpha, `0.0.1` — "a home that opens".** The app exists, installs,
-> launches, detects what's on your machine, and is honest about what it can't do
-> yet. Running workflows arrives slice by slice; see
+> **Status: alpha, `0.0.2`.** The app exists, installs, launches, interviews you
+> on first run (and never writes before asking), detects what's on your machine,
+> and is honest about what it can't do yet. Running workflows arrives slice by slice; see
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.0` and
 > [`docs/DESIGN.md`](docs/DESIGN.md) for the conceptual model (the constitution).
 

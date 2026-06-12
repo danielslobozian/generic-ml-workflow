@@ -9,6 +9,41 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-06-12
+
+**Config + the first-run interview.** The app now has its one fixed location and
+asks before it ever writes.
+
+### Added
+
+- Config resolution from the OS-standard path (`~/.config/gmlworkflow/config.toml`
+  on Linux; platform equivalents elsewhere), overridable by exactly one
+  environment variable, `GMLWORKFLOW_CONFIG`. Per-setting precedence, mirroring
+  gmlcache conventions: session override > environment (`GMLWORKFLOW_FLOWS` /
+  `GMLWORKFLOW_STATE` / `GMLWORKFLOW_WORKSPACE` / `GMLWORKFLOW_BANNER`) > config
+  file > built-in default. Unknown sections/keys are kept, not rejected; an
+  unparseable file or wrong-shaped value is reported loudly at launch and the
+  workspace survives on defaults without writing anything.
+- The first-run interview: no config found → the app proposes (1) standard OS
+  folders, (2) one single folder for everything, (3) custom paths — and writes
+  the config only after you answer, then creates the answered-for folders. The
+  written config is documented inline (seeded values, allowed values, precedence,
+  env names). Skipping (EOF or an invalid choice) writes nothing; defaults carry
+  the session and the interview returns next launch. Custom paths must be
+  absolute (`~` allowed): the app is location-blind and resolves nothing against
+  the cwd.
+- `/status` goes live: the config file in use (or its absence, or its brokenness)
+  and every effective setting with its value and source
+  (session / env / config / default).
+- `/banner <style>` now persists: an explicit choice updates the `[ui] banner`
+  line in place, preserving the rest of the file byte-for-byte (comments
+  included); without a config file the switch is session-only and says so.
+
+### Changed
+
+- `core.paths.resolve()` removed; effective locations now come from
+  `core.config.load(...).as_paths()` with full source tracking.
+
 ## [0.0.1] - 2026-06-12
 
 The first slice: **a home that opens**. The app exists, installs, launches, and is
@@ -42,5 +77,6 @@ honest about what it can't do yet.
   SECURITY, GOVERNANCE, CONTRIBUTING, CI across ubuntu/macos/windows × Python
   3.11–3.13 (tests + ruff check + format check), issue/PR templates, dependabot.
 
-[Unreleased]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/danielslobozian/generic-ml-workflow/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/danielslobozian/generic-ml-workflow/releases/tag/v0.0.1
