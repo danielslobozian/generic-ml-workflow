@@ -9,6 +9,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- The shot **request envelope** (`core.envelope`, DESIGN.md SS8):
+  `[context, prompt, files]`, with **purity enforced in the builder** -- the
+  run-agnostic context prefix is refused if it carries run-specific material
+  (timestamps, absolute paths, execution/session ids), because an impure prefix
+  would shatter every downstream cassette key and the client's prefix cache. The
+  prompt and files may legitimately carry run-specific material; the context may
+  not.
+
 ## [0.0.5] - 2026-06-12
 
 ### Added
