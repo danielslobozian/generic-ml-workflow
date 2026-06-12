@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "generic-ml-workflow"
-version = "0.0.3"
+version = "0.0.4.dev0"
 description = "An interactive terminal workspace that drives ML coding clients as stateless, cached shots through generic-ml-cache."
 readme = "README.md"
 requires-python = ">=3.11"
