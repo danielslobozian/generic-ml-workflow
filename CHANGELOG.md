@@ -17,6 +17,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   (`event_types()` / `describe()`) -- the Swagger-for-events backbone. Payloads
   carry scalars, references (meta-code by name + commit), and pointers (path +
   sha) only; parsing fails loudly on an unknown or missing field.
+- The event store wired to the typed vocabulary (`core.events`): the append-only
+  log (sole source of truth) plus project-on-append read-models (`jobs`,
+  `workflow_executions` with the commit/branch/engine-version stamp), all in one
+  transaction (immediate consistency, no refresh). The run **historization key**
+  (`execution_id`, minted in code) groups a run and doubles as the execution PK;
+  `replay(execution_id)` returns typed events in order; `rebuild_projections`
+  reconstructs every read-model from the log alone. A discipline test enforces the
+  pointer-only payload rule (invariant 11): no payload bean may inline content.
 
 ## [0.0.3] - 2026-06-12
 

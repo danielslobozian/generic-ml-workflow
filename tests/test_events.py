@@ -1,137 +1,150 @@
 # SPDX-FileCopyrightText: 2026 Daniel Slobozian
 # SPDX-License-Identifier: Apache-2.0
-"""The event store (converted salvage groundwork): append/replay round-trip,
-projection correctness, pointer-only payloads, and the Job entity. The store runs
-in-memory; nothing touches a real file. The full event-spine slice is 0.0.4."""
+"""The event store: append/replay round-trip, project-on-append read-models,
+typed payloads through the envelope, and rebuild-from-log. Runs in-memory."""
 
-from generic_ml_workflow.core import events as ev
-from generic_ml_workflow.core.events import Event, EventStore
+from generic_ml_workflow.core import eventtypes as et
+from generic_ml_workflow.core.events import Event, EventStore, new_execution_id
 
 
-def _mem() -> EventStore:
+def _store() -> EventStore:
     return EventStore(":memory:")
 
 
-# --- append / replay --------------------------------------------------------
+def test_new_execution_id_is_unique():
+    assert new_execution_id() != new_execution_id()
 
 
-def test_append_replay_round_trip_preserves_order_and_payload():
-    s = _mem()
-    s.append(Event(event_type=ev.WORKFLOW_STARTED, session_id="x1", payload={"workflow": "demo"}))
-    s.append(Event(event_type=ev.STEP_STARTED, session_id="x1", step_id="fetch"))
-    s.append(
-        Event(
-            event_type=ev.ARTIFACT_CREATED,
-            session_id="x1",
-            step_id="fetch",
-            payload={"name": "page", "path": "/runs/x1/page.html", "sha256": "ab" * 32},
-        )
+def test_append_assigns_seq_and_round_trips_typed_payload():
+    s = _store()
+    x = new_execution_id()
+    ev = s.emit(
+        et.WorkflowExecutionStarted(
+            workflow_name="feature",
+            input_type="url",
+            commit="abc",
+            branch="main",
+            engine_version="0.0.4.dev0",
+            job_id="J-1",
+        ),
+        execution_id=x,
     )
-    s.append(Event(event_type=ev.WORKFLOW_COMPLETED, session_id="x1"))
-    got = s.replay("x1")
-    assert [e.event_type for e in got] == [
-        ev.WORKFLOW_STARTED,
-        ev.STEP_STARTED,
-        ev.ARTIFACT_CREATED,
-        ev.WORKFLOW_COMPLETED,
+    assert ev.seq == 1
+    got = s.replay(x)
+    assert len(got) == 1
+    payload = got[0].payload
+    assert isinstance(payload, et.WorkflowExecutionStarted)
+    assert payload.workflow_name == "feature" and payload.commit == "abc"
+
+
+def test_replay_is_scoped_and_ordered_by_execution():
+    s = _store()
+    a, b = new_execution_id(), new_execution_id()
+    s.emit(et.RunInputProvided(name="t", value="1"), execution_id=a)
+    s.emit(et.RunInputProvided(name="t", value="2"), execution_id=b)
+    s.emit(et.StepStarted(step_name="fetch"), execution_id=a, step_name="fetch")
+    assert [e.event_type for e in s.replay(a)] == [
+        et.EventType.RUN_INPUT_PROVIDED,
+        et.EventType.STEP_STARTED,
     ]
-    assert got[2].payload["sha256"] == "ab" * 32  # the pointer, not the content
+    assert len(s.replay(b)) == 1
 
 
-def test_replay_is_scoped_to_one_session():
-    s = _mem()
-    s.append(Event(event_type=ev.WORKFLOW_STARTED, session_id="a", payload={"workflow": "w"}))
-    s.append(Event(event_type=ev.WORKFLOW_STARTED, session_id="b", payload={"workflow": "w"}))
-    assert len(s.replay("a")) == 1
-
-
-# --- projections ------------------------------------------------------------
-
-
-def test_session_projection_follows_the_log():
-    s = _mem()
-    s.append(
-        Event(
-            event_type=ev.WORKFLOW_STARTED,
-            session_id="x1",
-            payload={"workflow": "demo", "job_id": "J-1"},
-        )
+def test_scope_keys_are_stored():
+    s = _store()
+    x = new_execution_id()
+    s.emit(
+        et.StepStarted(step_name="fetch", attempt=2), execution_id=x, step_name="fetch", attempt=2
     )
-    s.append(Event(event_type=ev.STEP_STARTED, session_id="x1", step_id="analyze"))
-    row = s.session_row("x1")
-    assert row["status"] == "running" and row["current_step"] == "analyze"
-    assert row["job_id"] == "J-1"
-    s.append(Event(event_type=ev.WORKFLOW_FAILED, session_id="x1"))
-    assert s.session_row("x1")["status"] == "failed"
+    ev = s.replay(x)[0]
+    assert ev.step_name == "fetch" and ev.attempt == 2
 
 
-def test_artifact_projection_upserts_by_name():
-    s = _mem()
-    for sha in ("aa", "bb"):
-        s.append(
-            Event(
-                event_type=ev.ARTIFACT_CREATED,
-                session_id="x1",
-                step_id="fetch",
-                payload={"name": "page", "path": "/p", "sha256": sha},
-            )
-        )
-    arts = s.artifacts("x1")
-    assert len(arts) == 1 and arts[0]["sha256"] == "bb"
-
-
-def test_questions_projection_open_then_answered():
-    s = _mem()
-    s.append(
-        Event(
-            event_type=ev.QUESTIONS_ASKED,
-            session_id="x1",
-            step_id="analyze",
-            payload={"questions": [{"id": "q1", "text": "which variant?", "blocking": True}]},
-        )
+def test_workflow_execution_projection_tracks_the_log():
+    s = _store()
+    x = new_execution_id()
+    s.emit(
+        et.WorkflowExecutionStarted(
+            workflow_name="feature",
+            input_type="url",
+            commit="c1",
+            branch="main",
+            engine_version="0.0.4.dev0",
+            job_id="J-1",
+        ),
+        execution_id=x,
     )
-    assert s.open_blocking_questions("x1", "analyze") == [{"id": "q1", "text": "which variant?"}]
-    s.append(
-        Event(
-            event_type=ev.USER_ANSWER_SUBMITTED,
-            session_id="x1",
-            step_id="analyze",
-            actor="user",
-            payload={"question_id": "q1", "answer": "the second", "status": "answered"},
-        )
-    )
-    assert s.open_blocking_questions("x1", "analyze") == []
+    row = s.execution(x)
+    assert row["status"] == "running" and row["workflow_name"] == "feature"
+    assert row["commit"] == "c1"  # the stamp is projected
+    s.emit(et.WorkflowExecutionCompleted(), execution_id=x)
+    assert s.execution(x)["status"] == "completed"
 
 
-# --- jobs (the organizing unit) ----------------------------------------------
-
-
-def test_open_job_creates_then_selects_idempotently():
-    s = _mem()
-    row = s.open_job("JOB-1", "fix login")
-    assert row["job_id"] == "JOB-1" and row["label"] == "fix login" and row["status"] == "open"
-    s.open_job("JOB-1")  # selecting again
-    assert len(s.jobs()) == 1  # not duplicated
-    opened = [e for e in s.replay("JOB-1") if e.event_type == ev.JOB_OPENED]
-    assert len(opened) == 1  # and records no second event
-
-
-def test_jobs_list_in_creation_order():
-    s = _mem()
-    s.open_job("A", "first")
-    s.open_job("B", "second")
-    assert [j["job_id"] for j in s.jobs()] == ["A", "B"]
+def test_job_projection_idempotent_upsert():
+    s = _store()
+    j = new_execution_id()
+    s.emit(et.JobOpened(job_id="JOB-1", label="fix login"), execution_id=j)
+    s.emit(et.JobOpened(job_id="JOB-1"), execution_id=j)  # re-open, no label
+    jobs = s.jobs()
+    assert len(jobs) == 1 and jobs[0]["label"] == "fix login"  # label preserved
 
 
 def test_executions_regroup_by_job():
-    s = _mem()
-    s.open_job("J-1")
-    for sid in ("x1", "x2"):
-        s.append(
-            Event(
-                event_type=ev.WORKFLOW_STARTED,
-                session_id=sid,
-                payload={"workflow": "demo", "job_id": "J-1"},
-            )
+    s = _store()
+    for sid in (new_execution_id(), new_execution_id()):
+        s.emit(
+            et.WorkflowExecutionStarted(
+                workflow_name="feature",
+                input_type="url",
+                commit="c",
+                branch="main",
+                engine_version="v",
+                job_id="J-1",
+            ),
+            execution_id=sid,
         )
-    assert [e["session_id"] for e in s.executions_for_job("J-1")] == ["x1", "x2"]
+    assert len(s.executions(job_id="J-1")) == 2
+    assert s.executions(job_id="J-other") == []
+
+
+def test_rebuild_projections_reconstructs_from_the_log():
+    s = _store()
+    x = new_execution_id()
+    s.emit(
+        et.WorkflowExecutionStarted(
+            workflow_name="feature",
+            input_type="url",
+            commit="c",
+            branch="main",
+            engine_version="v",
+        ),
+        execution_id=x,
+    )
+    s.emit(et.WorkflowExecutionCompleted(), execution_id=x)
+    # nuke the projection by hand, then rebuild purely from events
+    s._conn.execute("DELETE FROM workflow_executions")
+    s._conn.commit()
+    assert s.execution(x) is None
+    s.rebuild_projections()
+    assert s.execution(x)["status"] == "completed"  # reconstructed identically
+
+
+def test_event_carries_uuid_and_timestamp():
+    s = _store()
+    x = new_execution_id()
+    ev = s.emit(et.RunInputProvided(name="t", value="1"), execution_id=x)
+    assert ev.event_id and ev.occurred_at and "T" in ev.occurred_at  # ISO-8601 UTC
+
+
+def test_append_directly_with_event_object():
+    s = _store()
+    x = new_execution_id()
+    ev = Event(
+        event_type=et.EventType.RUN_INPUT_PROVIDED,
+        execution_id=x,
+        payload=et.RunInputProvided(name="ticket", value="test-001"),
+    )
+    stored = s.append(ev)
+    assert stored.seq == 1
+    assert s.replay(x)[0].payload.value == "test-001"

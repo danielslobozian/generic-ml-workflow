@@ -1,25 +1,25 @@
 # SPDX-FileCopyrightText: 2026 Daniel Slobozian
 # SPDX-License-Identifier: Apache-2.0
-"""events.py -- the spine.
+"""events.py -- the event store: the append-only log (the sole source of truth)
+plus project-on-append read-models, on one local SQLite file (DESIGN.md SS11).
 
-An append-only event log is the truth; projections are convenient views rebuilt
-from it. This is the lightweight, hand-rolled form (stdlib sqlite3) -- no
-framework, the right weight for a local single-user app.
+The log is authoritative and never updated or deleted. Projections are derived,
+disposable, and written *in the same transaction* as the event they reflect
+(immediate consistency, no refresh, no staleness). Drop every projection and
+``rebuild_projections`` replays the log to reconstruct them identically.
 
-Two disciplines hold the founding rule (design invariant 11):
+The event envelope is uniform columns (queryable: seq, event_id, event_type,
+occurred_at, execution_id, actor, and the nested scope keys step_name / attempt)
+plus one opaque ``payload`` (JSON) -- the type-specific body, declared by its bean
+in ``eventtypes``. The store stays generic; types live in the vocabulary.
 
-  * The event payload is small: metadata + POINTERS (path + sha256), never file
-    contents. The substance stays in files on disk; the event references it.
-  * One generic envelope, typed-by-event_type payloads. Not one table per type.
+Scope keys nest: ``execution_id`` is mandatory on every run event; ``step_name``
+and ``attempt`` narrow within it (null when N/A). Loading a run is one indexed
+query, ``WHERE execution_id = ? ORDER BY seq``.
 
-``replay(session_id)`` returns the ordered events -- the basis of the `/replay`
-story view, and the same keys (session/step/execution/cap) give cost attribution
-for free.
-
-Groundwork note: this module is converted salvage. Its real slice is 0.0.4 (the
-event spine), which wires it into the REPL, settles the Run/StepExecution naming,
-and adds the pointer-only payload enforcement to the gate. Until then nothing on
-the launch path opens a database.
+Kept minimal: only the projections the event types that exist today justify
+(``jobs`` and ``workflow_executions``). Step-executions, artifacts, the context
+fold, and the gate read-model arrive with the slices that emit their events.
 """
 
 from __future__ import annotations
@@ -31,37 +31,34 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-# --- event-type namespace (draw from this; implement only what a slice needs) ---
-WORKFLOW_STARTED = "workflow.started"
-WORKFLOW_COMPLETED = "workflow.completed"
-WORKFLOW_FAILED = "workflow.failed"
-STEP_STARTED = "step.started"
-STEP_BLOCKED = "step.blocked"
-STEP_UNBLOCKED = "step.unblocked"
-STEP_COMPLETED = "step.completed"
-STEP_FAILED = "step.failed"
-EXECUTION_COMPLETED = "execution.completed"  # one shot or executable invocation finished
-ARTIFACT_CREATED = "artifact.created"  # a declared output landed (path + sha256)
-QUESTIONS_ASKED = "questions.asked"  # a transport questions-set was extracted
-USER_ANSWER_SUBMITTED = "user.answer_submitted"
-JOB_OPENED = "job.opened"  # a job was created (the regroup key)
+from generic_ml_workflow.core import eventtypes
+from generic_ml_workflow.core.eventtypes import EventType, Payload
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def new_execution_id() -> str:
+    """Mint a run's historization key -- in code, before the first event."""
+    return uuid.uuid4().hex
+
+
 @dataclass(frozen=True)
 class Event:
-    event_type: str
-    session_id: str
-    payload: dict = field(default_factory=dict)
-    step_id: str | None = None
-    execution_id: str | None = None
-    cap: str | None = None
+    """One envelope + typed payload. ``execution_id`` is the historization key
+    (mandatory for run events). ``step_name`` / ``attempt`` are optional nested
+    scope. ``event_id``, ``seq``, ``occurred_at`` are assigned by the store."""
+
+    event_type: EventType
+    execution_id: str
+    payload: Payload
+    step_name: str | None = None
+    attempt: int | None = None
     actor: str = "system"  # system | user | ml_client
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     occurred_at: str = field(default_factory=_now)
+    seq: int | None = None  # assigned on append
 
 
 _SCHEMA = """
@@ -69,71 +66,46 @@ CREATE TABLE IF NOT EXISTS events (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,   -- total order, append-only
     event_id      TEXT NOT NULL UNIQUE,
     event_type    TEXT NOT NULL,
-    occurred_at   TEXT NOT NULL,
-    session_id    TEXT NOT NULL,
-    step_id       TEXT,
-    execution_id  TEXT,
-    cap           TEXT,
+    occurred_at   TEXT NOT NULL,                        -- UTC ISO-8601, mandatory
+    execution_id  TEXT NOT NULL,                        -- the historization key
+    step_name     TEXT,                                 -- nested scope (optional)
+    attempt       INTEGER,
     actor         TEXT NOT NULL,
     payload_json  TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
-CREATE INDEX IF NOT EXISTS idx_events_step    ON events(step_id, seq);
-CREATE INDEX IF NOT EXISTS idx_events_type    ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_exec ON events(execution_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
--- projection: current session state (a convenient read, rebuildable from events)
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id  TEXT PRIMARY KEY,
-    workflow    TEXT,
-    status      TEXT,
-    current_step TEXT,
-    job_id      TEXT,
-    created_at  TEXT,
-    updated_at  TEXT
-);
--- projection: artifacts the workflow produced (the durable substance index)
-CREATE TABLE IF NOT EXISTS artifacts (
-    session_id  TEXT NOT NULL,
-    step_id     TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    path        TEXT NOT NULL,
-    sha256      TEXT,
-    created_at  TEXT,
-    PRIMARY KEY (session_id, step_id, name)
-);
--- projection: open/answered questions (the gate's read model)
-CREATE TABLE IF NOT EXISTS questions (
-    question_id TEXT PRIMARY KEY,
-    session_id  TEXT NOT NULL,
-    step_id     TEXT NOT NULL,
-    text        TEXT NOT NULL,
-    blocking    INTEGER NOT NULL,
-    status      TEXT NOT NULL,          -- open | answered | skipped
-    answer      TEXT,
-    created_at  TEXT,
-    answered_at TEXT
-);
--- projection: jobs -- the unit everything regroups by (history, cost, documents)
+-- projection: jobs -- the regroup unit (history, cost, documents regroup by job)
 CREATE TABLE IF NOT EXISTS jobs (
     job_id      TEXT PRIMARY KEY,
     label       TEXT,
-    status      TEXT,
     created_at  TEXT,
     updated_at  TEXT
+);
+-- projection: workflow executions -- the run, with its stamp (commit/branch/version)
+CREATE TABLE IF NOT EXISTS workflow_executions (
+    execution_id   TEXT PRIMARY KEY,
+    workflow_name  TEXT,
+    input_type     TEXT,
+    job_id         TEXT,
+    status         TEXT,                                -- running | completed | failed
+    commit_hash    TEXT,
+    branch         TEXT,
+    engine_version TEXT,
+    created_at     TEXT,
+    updated_at     TEXT
 );
 """
 
 
 class EventStore:
-    """Append-only event log + projections, on one SQLite file.
-
-    The store is the only writer of truth. Projections are updated in the same
-    transaction as the append, so a reader never sees an event without its view.
-    """
+    """Append-only log + project-on-append read-models on one SQLite file."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
@@ -142,201 +114,188 @@ class EventStore:
     def close(self) -> None:
         self._conn.close()
 
-    # --- the one write path ---
+    # --- the one write path: append the event + project it, atomically ---
     def append(self, event: Event) -> Event:
-        """Append an event and update any projection it implies, atomically."""
-        with self._conn:  # transaction
-            self._conn.execute(
-                "INSERT INTO events(event_id,event_type,occurred_at,session_id,"
-                "step_id,execution_id,cap,actor,payload_json) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+        with self._conn:  # one transaction covers log + projections
+            cur = self._conn.execute(
+                "INSERT INTO events(event_id,event_type,occurred_at,execution_id,"
+                "step_name,attempt,actor,payload_json) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     event.event_id,
-                    event.event_type,
+                    event.event_type.value,
                     event.occurred_at,
-                    event.session_id,
-                    event.step_id,
                     event.execution_id,
-                    event.cap,
+                    event.step_name,
+                    event.attempt,
                     event.actor,
-                    json.dumps(event.payload, ensure_ascii=False),
+                    json.dumps(event.payload.to_json(), ensure_ascii=False),
                 ),
             )
             self._project(event)
-        return event
+        return Event(
+            event_type=event.event_type,
+            execution_id=event.execution_id,
+            payload=event.payload,
+            step_name=event.step_name,
+            attempt=event.attempt,
+            actor=event.actor,
+            event_id=event.event_id,
+            occurred_at=event.occurred_at,
+            seq=cur.lastrowid,
+        )
 
-    # --- projections (rebuildable; kept in step with the log) ---
+    def emit(
+        self,
+        payload: Payload,
+        execution_id: str,
+        *,
+        step_name: str | None = None,
+        attempt: int | None = None,
+        actor: str = "system",
+    ) -> Event:
+        """Convenience: build the envelope around a typed payload and append it.
+        The event type is taken from the payload bean -- they cannot disagree."""
+        return self.append(
+            Event(
+                event_type=payload.event_type,
+                execution_id=execution_id,
+                payload=payload,
+                step_name=step_name,
+                attempt=attempt,
+                actor=actor,
+            )
+        )
+
+    # --- projections (pure function of the event; rebuilt by replaying) ---
     def _project(self, e: Event) -> None:
         c = self._conn
-        if e.event_type == WORKFLOW_STARTED:
+        p = e.payload
+        if e.event_type is EventType.JOB_OPENED:
             c.execute(
-                "INSERT INTO sessions(session_id,workflow,status,current_step,job_id,"
-                "created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET "
-                "workflow=excluded.workflow,status=excluded.status,job_id=excluded.job_id,"
+                "INSERT INTO jobs(job_id,label,created_at,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET label=COALESCE(excluded.label, jobs.label),"
+                "updated_at=excluded.updated_at",
+                (p.job_id, p.label, e.occurred_at, e.occurred_at),
+            )
+        elif e.event_type is EventType.WORKFLOW_EXECUTION_STARTED:
+            c.execute(
+                "INSERT INTO workflow_executions(execution_id,workflow_name,input_type,job_id,"
+                "status,commit_hash,branch,engine_version,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(execution_id) DO UPDATE SET "
+                "workflow_name=excluded.workflow_name,status=excluded.status,"
                 "updated_at=excluded.updated_at",
                 (
-                    e.session_id,
-                    e.payload.get("workflow"),
+                    e.execution_id,
+                    p.workflow_name,
+                    p.input_type,
+                    p.job_id,
                     "running",
-                    None,
-                    e.payload.get("job_id"),
+                    p.commit,
+                    p.branch,
+                    p.engine_version,
                     e.occurred_at,
                     e.occurred_at,
                 ),
             )
-        elif e.event_type in (WORKFLOW_COMPLETED, WORKFLOW_FAILED):
-            status = "completed" if e.event_type == WORKFLOW_COMPLETED else "failed"
+        elif e.event_type is EventType.WORKFLOW_EXECUTION_COMPLETED:
             c.execute(
-                "UPDATE sessions SET status=?,updated_at=? WHERE session_id=?",
-                (status, e.occurred_at, e.session_id),
+                "UPDATE workflow_executions SET status='completed',updated_at=? "
+                "WHERE execution_id=?",
+                (e.occurred_at, e.execution_id),
             )
-        elif e.event_type == STEP_STARTED:
+        elif e.event_type is EventType.WORKFLOW_EXECUTION_FAILED:
             c.execute(
-                "UPDATE sessions SET current_step=?,updated_at=? WHERE session_id=?",
-                (e.step_id, e.occurred_at, e.session_id),
-            )
-        elif e.event_type == ARTIFACT_CREATED:
-            c.execute(
-                "INSERT INTO artifacts(session_id,step_id,name,path,sha256,created_at) "
-                "VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,step_id,name) DO UPDATE SET "
-                "path=excluded.path,sha256=excluded.sha256,created_at=excluded.created_at",
-                (
-                    e.session_id,
-                    e.step_id,
-                    e.payload.get("name"),
-                    e.payload.get("path"),
-                    e.payload.get("sha256"),
-                    e.occurred_at,
-                ),
-            )
-        elif e.event_type == QUESTIONS_ASKED:
-            for q in e.payload.get("questions", []):
-                c.execute(
-                    "INSERT OR REPLACE INTO questions("
-                    "question_id,session_id,step_id,text,blocking,status,answer,"
-                    "created_at,answered_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
-                    (
-                        q["id"],
-                        e.session_id,
-                        e.step_id,
-                        q["text"],
-                        int(bool(q.get("blocking", True))),
-                        "open",
-                        None,
-                        e.occurred_at,
-                        None,
-                    ),
-                )
-        elif e.event_type == USER_ANSWER_SUBMITTED:
-            status = e.payload.get("status", "answered")  # answered | skipped
-            c.execute(
-                "UPDATE questions SET status=?,answer=?,answered_at=? WHERE question_id=?",
-                (status, e.payload.get("answer"), e.occurred_at, e.payload.get("question_id")),
-            )
-        elif e.event_type == JOB_OPENED:
-            c.execute(
-                "INSERT INTO jobs(job_id,label,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET "
-                "label=COALESCE(excluded.label, jobs.label),updated_at=excluded.updated_at",
-                (
-                    e.payload.get("job_id") or e.session_id,
-                    e.payload.get("label"),
-                    "open",
-                    e.occurred_at,
-                    e.occurred_at,
-                ),
+                "UPDATE workflow_executions SET status='failed',updated_at=? WHERE execution_id=?",
+                (e.occurred_at, e.execution_id),
             )
 
     # --- reads ---
-    def replay(self, session_id: str) -> list[Event]:
+    def replay(self, execution_id: str) -> list[Event]:
+        """Every event of one run, in order -- the basis of /replay and of the
+        deterministic fold that rebuilds in-memory state."""
         rows = self._conn.execute(
-            "SELECT event_type,occurred_at,session_id,step_id,execution_id,cap,actor,"
-            "payload_json,event_id FROM events WHERE session_id=? ORDER BY seq",
-            (session_id,),
+            "SELECT event_type,occurred_at,execution_id,step_name,attempt,actor,"
+            "payload_json,event_id,seq FROM events WHERE execution_id=? ORDER BY seq",
+            (execution_id,),
         )
-        return [
-            Event(
-                event_type=r[0],
-                occurred_at=r[1],
-                session_id=r[2],
-                step_id=r[3],
-                execution_id=r[4],
-                cap=r[5],
-                actor=r[6],
-                payload=json.loads(r[7]),
-                event_id=r[8],
+        return [self._row_to_event(r) for r in rows]
+
+    @staticmethod
+    def _row_to_event(r) -> Event:
+        et = EventType(r[0])
+        return Event(
+            event_type=et,
+            occurred_at=r[1],
+            execution_id=r[2],
+            step_name=r[3],
+            attempt=r[4],
+            actor=r[5],
+            payload=eventtypes.parse_payload(et, json.loads(r[6])),
+            event_id=r[7],
+            seq=r[8],
+        )
+
+    def jobs(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT job_id,label,created_at FROM jobs ORDER BY created_at, job_id"
+        )
+        return [{"job_id": r[0], "label": r[1], "created_at": r[2]} for r in rows]
+
+    def executions(self, job_id: str | None = None) -> list[dict]:
+        if job_id is None:
+            rows = self._conn.execute(
+                "SELECT execution_id,workflow_name,input_type,job_id,status,commit_hash,"
+                "created_at FROM workflow_executions ORDER BY created_at"
             )
+        else:
+            rows = self._conn.execute(
+                "SELECT execution_id,workflow_name,input_type,job_id,status,commit_hash,"
+                "created_at FROM workflow_executions WHERE job_id=? ORDER BY created_at",
+                (job_id,),
+            )
+        return [
+            {
+                "execution_id": r[0],
+                "workflow_name": r[1],
+                "input_type": r[2],
+                "job_id": r[3],
+                "status": r[4],
+                "commit": r[5],
+                "created_at": r[6],
+            }
             for r in rows
         ]
 
-    def open_blocking_questions(self, session_id: str, step_id: str) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT question_id,text FROM questions WHERE session_id=? AND step_id=? "
-            "AND status='open' AND blocking=1",
-            (session_id, step_id),
-        )
-        return [{"id": r[0], "text": r[1]} for r in rows]
-
-    def session_row(self, session_id: str) -> dict | None:
+    def execution(self, execution_id: str) -> dict | None:
         r = self._conn.execute(
-            "SELECT session_id,workflow,status,current_step,job_id FROM sessions "
-            "WHERE session_id=?",
-            (session_id,),
+            "SELECT execution_id,workflow_name,input_type,job_id,status,commit_hash,branch,"
+            "engine_version,created_at FROM workflow_executions WHERE execution_id=?",
+            (execution_id,),
         ).fetchone()
         if not r:
             return None
         return {
-            "session_id": r[0],
-            "workflow": r[1],
-            "status": r[2],
-            "current_step": r[3],
-            "job_id": r[4],
+            "execution_id": r[0],
+            "workflow_name": r[1],
+            "input_type": r[2],
+            "job_id": r[3],
+            "status": r[4],
+            "commit": r[5],
+            "branch": r[6],
+            "engine_version": r[7],
+            "created_at": r[8],
         }
 
-    def artifacts(self, session_id: str) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT step_id,name,path,sha256 FROM artifacts WHERE session_id=? ORDER BY rowid",
-            (session_id,),
-        )
-        return [{"step_id": r[0], "name": r[1], "path": r[2], "sha256": r[3]} for r in rows]
-
-    def executions_for_job(self, job_id: str) -> list[dict]:
-        """Every workflow execution bound to a job, oldest first -- the job's run
-        history (the new-vs-continue read)."""
-        rows = self._conn.execute(
-            "SELECT session_id,workflow,status,created_at FROM sessions "
-            "WHERE job_id=? ORDER BY created_at",
-            (job_id,),
-        )
-        return [
-            {"session_id": r[0], "workflow": r[1], "status": r[2], "created_at": r[3]} for r in rows
-        ]
-
-    # --- jobs (the organizing unit) ---
-    def open_job(self, job_id: str, label: str | None = None, actor: str = "user") -> dict:
-        """Create the job if new (append JOB_OPENED); else just return it. Selecting an
-        existing job records nothing -- existence + label is the state, set once."""
-        if self.job_row(job_id) is None:
-            self.append(
-                Event(
-                    event_type=JOB_OPENED,
-                    session_id=job_id,
-                    actor=actor,
-                    payload={"job_id": job_id, "label": label},
-                )
-            )
-        return self.job_row(job_id)
-
-    def jobs(self) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT job_id,label,status,created_at FROM jobs ORDER BY created_at, job_id"
-        )
-        return [{"job_id": r[0], "label": r[1], "status": r[2], "created_at": r[3]} for r in rows]
-
-    def job_row(self, job_id: str) -> dict | None:
-        r = self._conn.execute(
-            "SELECT job_id,label,status,created_at FROM jobs WHERE job_id=?", (job_id,)
-        ).fetchone()
-        return {"job_id": r[0], "label": r[1], "status": r[2], "created_at": r[3]} if r else None
+    # --- rebuild (disaster recovery / projection schema change) ---
+    def rebuild_projections(self) -> None:
+        """Drop and replay: projections are derived, so they can always be
+        reconstructed from the log. The log itself is never touched."""
+        with self._conn:
+            self._conn.execute("DELETE FROM jobs")
+            self._conn.execute("DELETE FROM workflow_executions")
+            rows = self._conn.execute(
+                "SELECT event_type,occurred_at,execution_id,step_name,attempt,actor,"
+                "payload_json,event_id,seq FROM events ORDER BY seq"
+            ).fetchall()
+            for r in rows:
+                self._project(self._row_to_event(r))
