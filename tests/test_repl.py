@@ -47,12 +47,13 @@ def test_detection_rendering_present():
     assert "codex" in out and "not found" in out
 
 
-def test_gmlcache_absent_is_graceful_and_advisory():
+def test_gmlcache_absent_at_workspace_is_defensive_only():
+    # The launch wrapper (app.main -> deps.require) makes gmlcache-missing a hard
+    # launch block, tested in test_deps. If the workspace is somehow built without
+    # it (e.g. directly in a test), detection degrades defensively, not gracefully.
     out = drive(["/quit"], ABSENT)
-    assert "gmlcache not found" in out
-    assert "pip install generic-ml-cache" in out
-    assert "the workspace still opens" in out
-    assert "bye." in out  # the loop ran and exited cleanly
+    assert "unexpectedly unavailable" in out
+    assert "bye." in out  # constructed-directly, the loop still runs
 
 
 def test_help_lists_the_closed_verb_set():
@@ -179,6 +180,9 @@ def test_interview_single_folder_choice(tmp_path):
     out, repl = drive_at(["2", str(base), "/quit"], PRESENT, cfg)
     assert (base / "flows").is_dir() and (base / "state").is_dir()
     assert repl.settings.flows_dir == base / "flows"
+    # the app initializes the flows folder as a git repo (git is a verified dep)
+    assert (base / "flows" / ".git").exists()
+    assert "initialized a git repo" in out
 
 
 def test_interview_custom_paths_rejects_relative(tmp_path):

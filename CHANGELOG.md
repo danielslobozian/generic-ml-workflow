@@ -9,6 +9,24 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- Mandatory dependency gate at launch: the app checks for **git** (the versioning
+  spine) and **gmlcache** (the execution arm) before the workspace opens, and
+  refuses to start with a clear remedy if either is missing. The check is an edge
+  concern in the launch wrapper (`core.deps`), never the workspace, so the
+  workspace stays testable without those binaries. `core.deps.check()` is reusable
+  for a future `/doctor` status view.
+- The first-run interview now initializes the flows folder as a git repo (the app
+  drives git over your meta-code for versioning and time-travel) and seeds a
+  `.gitignore`. An existing repo at that path is left untouched.
+
+### Changed
+- The "home opens even without gmlcache" behavior of 0.0.1 is superseded: gmlcache
+  is now required to open (it is the only path to any model call). Client
+  *detection* stays advisory; the gmlcache *install* is mandatory.
+- The flows-dir config comment now states that the app creates and drives the git
+  repo, rather than asking the user to.
+
 ## [0.0.2] - 2026-06-12
 
 **Config + the first-run interview.** The app now has its one fixed location and

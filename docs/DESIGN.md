@@ -40,6 +40,19 @@ Consequence worth advertising: the bundled demo workflow ships with its **casset
 committed**, so CI exercises the entire engine loop — fetch, ML steps, produced
 files — offline, deterministically, and for free, via `gmlcache` offline mode.
 
+**Mandatory dependencies, checked at launch.** Two external tools are not
+optional and the app refuses to open without them: **git** (the versioning spine
+— meta-code history and the time-travel/resume machinery are how the engine
+works, not a feature on top) and **gmlcache** (the execution arm — the engine
+makes no model call any other way, so an engine without it is a dead shell). The
+launch wrapper checks both before the workspace is built and, on a miss, prints
+the remedy and exits. This is an *edge* check (like input validation at a service
+boundary): it lives at the entry point, never inside the workspace, so the
+workspace stays testable without those binaries present. Detecting which
+*clients* gmlcache sees remains separate and advisory — zero installed clients
+is fine (you may be validating, or running cached work); a missing gmlcache is
+not.
+
 **The family's third layer (planned, separate project).** A complete,
 user-friendly, chat-first application built *on* this engine, for people who are
 not engineers: create a workflow conversationally ("I want to download a ticket
@@ -428,3 +441,6 @@ question askable. The taxonomy and its ergonomics are not yet designed.
     companion) is a router onto it, never an actor with free-form execution.
 15. Zero tolerance for cwd pollution, hidden state, or auto-written files beyond
     the answered-for config.
+16. git and gmlcache are mandatory runtime dependencies, checked at launch; the
+    app refuses to open without them. The check is an edge concern (the launch
+    wrapper), never the workspace's.

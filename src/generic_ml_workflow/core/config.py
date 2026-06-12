@@ -165,8 +165,10 @@ def initial_config_text(flows: Path, state: Path, workspace: Path, banner: str =
 # with the GMLWORKFLOW_CONFIG environment variable.
 
 [paths]
-# Where your workflow definitions (meta-code) live. Yours, ideally a git repo;
-# the app never creates or modifies it.            env: GMLWORKFLOW_FLOWS
+# Your workflow definitions (meta-code) live here. On first run the app creates
+# this folder and initializes it as a git repo, then drives git over it (history,
+# time-travel); the contents are yours. Point it at an existing git repo and the
+# app leaves that repo's history untouched.   env: GMLWORKFLOW_FLOWS
 flows = "{flows.as_posix()}"
 
 # Runtime truth: the event database and logs.       env: GMLWORKFLOW_STATE

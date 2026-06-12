@@ -35,6 +35,7 @@ first-run interview (0.0.2) has asked where they should live.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -277,6 +278,7 @@ class Repl:
         config.write_initial_config(cfg_path, text)
         for p in (flows, state, ws):
             p.mkdir(parents=True, exist_ok=True)
+        self._init_flows_repo(flows)
         self._write(f"wrote {cfg_path} (documented inline; edit anytime) and created the folders.")
         self._write("")
         self._startup_config()  # reload so /status shows the file as the source
@@ -296,6 +298,34 @@ class Repl:
                 return p
             self._write("please give an absolute path (the app never resolves against the cwd).")
         return None
+
+    def _init_flows_repo(self, flows: Path) -> None:
+        """Initialize the flows folder as a git repo -- the app drives git over the
+        user's meta-code (versioning, time travel). git is a verified mandatory
+        dependency by the time we get here. An already-initialized repo is left
+        untouched: we never re-init or touch existing history."""
+        if (flows / ".git").exists():
+            self._write(f"  flows folder is already a git repo: {flows}")
+            return
+        try:
+            subprocess.run(
+                ["git", "init", "-q", str(flows)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+        except Exception as exc:  # noqa: BLE001 -- never let repo init abort the interview
+            self._write(f"  ! could not initialize git in {flows}: {exc}")
+            return
+        gitignore = flows / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(
+                "# Runtime artifacts and local files never belong in meta-code.\n"
+                "__pycache__/\n*.pyc\n.DS_Store\n",
+                encoding="utf-8",
+            )
+        self._write(f"  initialized a git repo for your workflows: {flows}")
 
     def _do_status(self, args: list[str]) -> bool:
         s = self.settings
@@ -329,12 +359,11 @@ class Repl:
         if d is None:
             return
         if not d.gmlcache_present:
-            self._write("  \u00b7 gmlcache not found -- this app executes nothing itself;")
-            self._write("    every model call goes through generic-ml-cache.")
-            self._write("    install it with: pip install generic-ml-cache")
+            # Reaching the workspace means the launch wrapper already verified
+            # gmlcache (see core.deps). This branch is a defensive fallback only
+            # (e.g. the workspace constructed directly in a test).
+            self._write("  ! gmlcache is unexpectedly unavailable -- detection skipped.")
             self._write(f"    ({d.gmlcache_detail})")
-            self._write("")
-            self._write("the workspace still opens; '/clients' re-scans once it's installed.")
             self._write("")
             return
         if d.gmlcache_detail:
