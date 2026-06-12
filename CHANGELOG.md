@@ -9,6 +9,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- The typed, self-describing event vocabulary (`core.eventtypes`, DESIGN.md SS11):
+  a closed engine-owned `EventType` enum, a typed payload **bean** per type
+  (the single declaration of each type's shape, used by writer and rebuilder so
+  they cannot drift), a registry, and a self-description capability
+  (`event_types()` / `describe()`) -- the Swagger-for-events backbone. Payloads
+  carry scalars, references (meta-code by name + commit), and pointers (path +
+  sha) only; parsing fails loudly on an unknown or missing field.
+
 ## [0.0.3] - 2026-06-12
 
 ### Added
