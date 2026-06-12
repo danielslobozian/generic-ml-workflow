@@ -17,6 +17,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   would shatter every downstream cassette key and the client's prefix cache. The
   prompt and files may legitimately carry run-specific material; the context may
   not.
+- The **gmlcache seam** (`core.shotrunner`): runs an interpretable step (a shot)
+  by building the `gmlcache run` argv (client/model/effort, the context/prompt
+  files, the envelope's input-files, the cassette store, the mode) and invoking it
+  in the step's isolated run folder, then collecting the declared outputs. argv
+  construction is pure and unit-tested; the subprocess is injectable. gmlcache's
+  passthrough is preserved -- stdout/stderr/exit captured, an offline cache miss
+  surfaces gmlcache's error verbatim. The engine still executes no model call
+  itself (invariant 3).
 
 ## [0.0.5] - 2026-06-12
 
