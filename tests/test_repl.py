@@ -5,6 +5,10 @@ prompt_toolkit is never constructed on this path)."""
 
 from pathlib import Path
 
+import sys
+
+import pytest
+
 from generic_ml_workflow import __version__
 from generic_ml_workflow.core.detect import ClientStatus, Detection
 from generic_ml_workflow.repl.shell import Repl
@@ -66,8 +70,8 @@ def test_help_lists_the_closed_verb_set():
 
 
 def test_stub_verbs_answer_not_yet_with_the_slice():
-    out = drive(["/run", "/quit"], PRESENT)
-    assert "not yet" in out and "0.0.5" in out and "ROADMAP" in out
+    out = drive(["/cost", "/quit"], PRESENT)
+    assert "not yet" in out and "0.0.10" in out and "ROADMAP" in out
 
 
 def test_every_stub_names_its_slice():
@@ -369,3 +373,90 @@ def test_status_shows_event_log_path(tmp_path):
     out, _ = drive_at(["/status", "/quit"], PRESENT, cfg)
     assert "event log" in out
     assert "gmlworkflow.db" in out
+
+
+# --- 0.0.5: /run drives the orchestrator from the prompt ----------------------
+
+
+def _run_cfg(tmp_path):
+    import subprocess as sp
+
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    # git-init so the run is stamped (mirrors what the interview does)
+    sp.run(["git", "-C", str(flows), "init", "-q"], check=True)
+    sp.run(["git", "-C", str(flows), "config", "user.email", "t@e.com"], check=True)
+    sp.run(["git", "-C", str(flows), "config", "user.name", "t"], check=True)
+    state = tmp_path / "state"
+    ws = tmp_path / "ws"
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        f'[paths]\nflows = "{flows.as_posix()}"\nstate = "{state.as_posix()}"\n'
+        f'workspace = "{ws.as_posix()}"\n[ui]\nbanner = "panel"\n',
+        encoding="utf-8",
+    )
+    return cfg, flows
+
+
+def _write_demo(flows):
+    import subprocess as sp
+
+    (flows / "fetch.sh").write_text(
+        "printf '<h1>%s</h1>' \"$(cat url)\" > page.html\n", encoding="utf-8"
+    )
+    (flows / "extract.sh").write_text("sed 's/<[^>]*>//g' source > text.txt\n", encoding="utf-8")
+    (flows / "demo.yaml").write_text(
+        "name: demo\ninput_type: url\nsteps:\n"
+        f"  - id: fetch\n    nature: executable\n    entrypoint: {flows / 'fetch.sh'}\n"
+        "    inputs:\n      - {name: url, require: run_input}\n"
+        "    outputs:\n      - {name: page, lifespan: durable, kind: file, filename: page.html}\n"
+        f"  - id: extract\n    nature: executable\n    entrypoint: {flows / 'extract.sh'}\n"
+        "    inputs:\n      - {name: source, require: artifact}\n"
+        "    outputs:\n      - {name: page_text, lifespan: durable, kind: file, "
+        "filename: text.txt}\n"
+        "bindings:\n  - {step: extract, port: source, product: page}\n",
+        encoding="utf-8",
+    )
+    sp.run(["git", "-C", str(flows), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(flows), "commit", "-qm", "demo"], check=True)
+
+
+def test_run_no_workflows_is_honest(tmp_path):
+    cfg, _ = _run_cfg(tmp_path)
+    out, _ = drive_at(["/run", "/quit"], PRESENT, cfg)
+    assert "no runnable workflows" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_run_executes_demo_end_to_end(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    # /run demo, then answer the computed interview (url), then replay
+    out, _ = drive_at(["/run demo", "hello world", "/replay", "/quit"], PRESENT, cfg)
+    assert "running 'demo'" in out
+    assert "\u2713 fetch" in out and "\u2713 extract" in out
+    assert "completed" in out
+    # /replay (bare) now lists the real execution
+    assert "demo" in out and "[completed]" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_run_invalid_workflow_refuses(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    (flows / "bad.yaml").write_text(
+        "name: bad\nsteps:\n  - {id: s, nature: interpretable}\n", encoding="utf-8"
+    )
+    out, _ = drive_at(["/run bad", "/quit"], PRESENT, cfg)
+    assert "does not validate" in out and "must declare a cap" in out
+
+
+def test_run_unknown_workflow(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    (flows / "demo.yaml").write_text(
+        "name: demo\ninput_type: url\nsteps:\n"
+        "  - {id: s, nature: executable, entrypoint: 'true', "
+        "outputs: [{name: o, lifespan: durable, kind: file, filename: o.txt}]}\n",
+        encoding="utf-8",
+    )
+    out, _ = drive_at(["/run ghost", "/quit"], PRESENT, cfg)
+    assert "no workflow 'ghost'" in out

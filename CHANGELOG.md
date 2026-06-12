@@ -22,6 +22,11 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   an invalid workflow never runs; a step failure stops the run; an interpretable
   (shot) step stops honestly (the gmlcache seam is 0.0.6). Demo phase 1 — two
   executable steps wired by a binding — runs end to end in tests.
+- `/run` goes live: lists runnable workflows, selects one (named or the sole one),
+  validates it, drives the **computed interview** at the prompt (the union of
+  unsatisfied run-inputs), reads the flows-repo stamp, and runs the orchestrator
+  against the real event store in the workspace — showing per-step progress and
+  the completed/failed/stopped outcome. `/replay` then shows the real story.
 
 ## [0.0.4] - 2026-06-12
 

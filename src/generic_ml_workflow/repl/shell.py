@@ -46,7 +46,15 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from generic_ml_workflow import __version__
-from generic_ml_workflow.core import config, detect, discovery, events, paths
+from generic_ml_workflow.core import (
+    config,
+    detect,
+    discovery,
+    events,
+    orchestrator,
+    paths,
+    stamp,
+)
 from generic_ml_workflow.repl import banner
 
 ROADMAP_URL = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/docs/ROADMAP.md"
@@ -124,7 +132,7 @@ class Repl:
                 "validate a workflow definition",
             ),
             "run": _Verb(
-                _stub("0.0.5", "running a workflow"),
+                Repl._do_run,
                 "/run [<workflow>]",
                 "run a workflow (the run interview)",
             ),
@@ -402,6 +410,76 @@ class Repl:
         db = self.settings.state_dir / "gmlworkflow.db"
         db.parent.mkdir(parents=True, exist_ok=True)
         return events.EventStore(db)
+
+    def _do_run(self, args: list[str]) -> bool:
+        flows = self._flows_dir()
+        if flows is None:
+            return True
+        found = discovery.discover_workflows(flows)
+        runnable = [d for d in found if d.workflow is not None]
+        if not runnable:
+            self._write(f"no runnable workflows in {flows}. author one (a .yaml), then '/run'.")
+            return True
+        # select the workflow
+        if args:
+            match = next((d for d in runnable if d.name == args[0] or d.path.stem == args[0]), None)
+            if match is None:
+                self._write(f"no workflow '{args[0]}'. try '/list'.")
+                return True
+        elif len(runnable) == 1:
+            match = runnable[0]
+        else:
+            self._write("which workflow?")
+            for d in runnable:
+                self._write(f"  {d.name} <{d.workflow.input_type.value}>")
+            self._write("run one with '/run <name>'.")
+            return True
+        workflow = match.workflow
+        # validate before asking anything
+        result = workflow.validate()
+        if not result.ok:
+            self._write(f"'{workflow.name}' does not validate -- fix it first ('/validate'):")
+            for e in result.errors:
+                self._write(f"  \u2717 {e}")
+            return True
+        # the computed interview: ask for the union of unsatisfied run-inputs
+        run_inputs: dict[str, str] = {}
+        for name in workflow.run_inputs():
+            answer = self._read(f"  {name}: ")
+            if answer is None:
+                self._write("cancelled.")
+                return True
+            run_inputs[name] = answer.strip()
+        self._execute_run(workflow, run_inputs, flows)
+        return True
+
+    def _execute_run(self, workflow, run_inputs, flows) -> None:
+        store = self._open_store()
+        if store is None:
+            return
+        try:
+            st = stamp.read_stamp(flows)
+            if not st.versioned:
+                self._write("  (flows folder is unversioned -- recording the run as such)")
+            orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
+            self._write(f"running '{workflow.name}'...")
+            try:
+                report = orch.run(workflow, run_inputs, st)
+            except orchestrator.OrchestratorError as exc:
+                self._write(f"  cannot run: {exc}")
+                return
+            for step_id in report.steps_run:
+                self._write(f"  \u2713 {step_id}")
+            if report.completed:
+                self._write(f"done. execution {report.execution_id[:12]} completed.")
+                self._write(f"see the story with '/replay {report.execution_id[:12]}'.")
+            elif report.stopped_reason:
+                self._write(f"  stopped: {report.stopped_reason}")
+            elif report.failed_step:
+                self._write(f"  \u2717 step '{report.failed_step}' failed.")
+                self._write(f"see '/replay {report.execution_id[:12]}' for details.")
+        finally:
+            store.close()
 
     def _do_replay(self, args: list[str]) -> bool:
         store = self._open_store()
