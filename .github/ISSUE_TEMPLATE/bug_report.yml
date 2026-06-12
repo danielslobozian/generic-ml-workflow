@@ -1,0 +1,75 @@
+name: Bug report
+description: Report something that does not work the way it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A failing test or the exact
+        REPL exchange that reproduces the problem is the most useful thing you
+        can give us.
+
+        Please do **not** report security vulnerabilities here — see
+        [SECURITY.md](../blob/main/SECURITY.md) for the private reporting channel.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I reproduced this on the latest release or on `main`.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `gmlworkflow --version`.
+      placeholder: "gmlworkflow 0.0.1"
+    validations:
+      required: true
+  - type: input
+    id: gmlcache
+    attributes:
+      label: gmlcache version (if installed)
+      description: Output of `gmlcache --version`, or "not installed". Detection and client execution are relayed to it.
+      placeholder: "gmlcache 0.0.5"
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "e.g. Ubuntu 24.04, macOS 14, Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "e.g. 3.11.9"
+    validations:
+      required: true
+  - type: textarea
+    id: exchange
+    attributes:
+      label: Exact REPL exchange (or library call)
+      description: What you typed and what the workspace answered. Redact any secrets.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: What you observed, including any error output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "generic-ml-workflow"
+version = "0.0.1"
+description = "An interactive terminal workspace that drives ML coding clients as stateless, cached shots through generic-ml-cache."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Daniel Slobozian" }]
+keywords = ["workflow", "llm", "ai", "cli", "agent", "repl", "orchestration", "claude", "codex", "cursor"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
+  "Topic :: Utilities",
+]
+# Unlike its zero-dependency sibling (generic-ml-cache), this app honestly carries
+# a few runtime dependencies, each earning its place:
+#   prompt_toolkit -- the REPL input layer; owns cross-OS line editing + completion
+#                     (stdlib readline diverges across GNU/libedit/Windows)
+#   rich           -- banner/terminal rendering, repl-side only
+#   pyyaml         -- workflow definitions are declarative YAML data
+#   platformdirs   -- the OS-standard config/state locations the app is fixed to
+dependencies = [
+  "prompt_toolkit>=3.0",
+  "rich>=13.0",
+  "pyyaml>=6.0",
+  "platformdirs>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/danielslobozian/generic-ml-workflow"
+Repository = "https://github.com/danielslobozian/generic-ml-workflow"
+Issues = "https://github.com/danielslobozian/generic-ml-workflow/issues"
+Changelog = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+
+[project.scripts]
+gmlworkflow = "generic_ml_workflow.repl.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/generic_ml_workflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/danielslobozian/generic-ml-workflow/security/advisories/new
+    about: Please report security vulnerabilities privately, not as a public issue. See SECURITY.md.
+  - name: Question or idea (discussion)
+    url: https://github.com/danielslobozian/generic-ml-workflow/discussions
+    about: For open-ended questions and discussion (if Discussions is enabled for this repo).

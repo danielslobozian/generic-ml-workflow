@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea or an improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please check
+        [docs/ROADMAP.md](../blob/main/docs/ROADMAP.md) and
+        [docs/DESIGN.md](../blob/main/docs/DESIGN.md) first — your idea may
+        already be planned for a later slice, or deliberately out of scope (the
+        design invariants in DESIGN.md §16 are load-bearing, and anything about
+        *calling models* belongs in generic-ml-cache, not here).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I checked the roadmap and existing issues; this is not already planned or declined.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you currently can't, or can't do well?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would it work? A sketch of the REPL exchange or workflow YAML helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

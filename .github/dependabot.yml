@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keep the GitHub Actions used by CI up to date.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - github-actions
+
+  # Watches the runtime dependencies (prompt_toolkit, rich, pyyaml,
+  # platformdirs) and the dev extras (pytest, pytest-cov) in pyproject.toml.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+      - python
