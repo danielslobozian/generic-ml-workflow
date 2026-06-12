@@ -275,7 +275,7 @@ read paths — mechanisms `gmlcache` provides natively (`--input-file`,
   token, by construction. Deterministic local steps exist partly *for* this:
   fetch-the-data locally, send only the data onward.
 
-## 11. The event log
+## 11. The event log — the persistence architecture
 
 An **append-only event log** plus thin projections, in one local SQLite database.
 Files are the substance; events are the spine: an event holds metadata and
@@ -284,6 +284,97 @@ Files are the substance; events are the spine: an event holds metadata and
 resolution, gate answers) are **events**; noisy diagnostics are logs. `replay`
 reconstructs a run's story by reading forward; the same keys give cost attribution
 for free.
+
+This section fixes the *principles*; the concrete tables grow slice by slice as
+real events justify them (we do not pin a whole schema up front — event sourcing's
+gift is that projections are rebuildable, so the schema may evolve freely). The
+sketch below is **illustrative direction, not a committed schema.**
+
+**The model is event sourcing — and explicitly not event streaming.** This is a
+single-user, single-writer, local application. The event log is the **single
+source of truth**; everything else is derived. We are *not* Kafka and *not* an
+event-streaming system: there is no message bus, no subscribers, no inter-service
+pipe, no eventual consistency. Those tools solve decoupling many services at
+volume; we have the opposite need — strong consistency and constantly fetching
+*one* run's full history to rebuild it, which a streaming log is poor at and an
+indexed local store is good at. The distinction matters: problems attributed to
+"event sourcing" are usually problems of *streaming* (staleness, no atomicity);
+they do not apply here.
+
+**Events are the only truth; projections are derived, disposable, rebuildable.**
+The `events` table is authoritative and never updated or deleted. Every other
+table (`jobs`, `workflow_executions`, `step_executions`, `artifacts`, gate
+questions, the context lookup) is a **read-model**: drop them all and replay the
+log (plus git, below) to reconstruct them identically. They are **not refreshed on
+a schedule** — each event's projection is applied *in the same transaction* as the
+append (project-on-append, immediate consistency, no staleness window). A full
+rebuild happens only on a deliberate projection schema change or disaster
+recovery. Projection updates must be a **pure, deterministic function of the
+event** (no clocks, randomness, or external calls), or replay would not reproduce
+the same tables.
+
+**The historization key groups a run.** Launching a workflow mints an in-memory
+**execution identifier** (a uuid, born in application code *before* the first
+event). It is stamped on every event of that run; loading a run is one indexed
+query, `WHERE execution_id = ? ORDER BY seq`. The same value doubles as the
+`workflow_executions` projection primary key — one value, three roles (minted in
+code, first persisted by the `…started` event, scope key on every later event),
+with no chicken-and-egg because it precedes the first event.
+
+**The event envelope is uniform columns + a heterogeneous payload.** Event bodies
+differ by type, so we do not force a pure-SQL structure onto them. Each event has
+a uniform **envelope** (queryable columns: `seq` total order, `event_id`,
+`event_type`, `occurred_at` — UTC, **mandatory on every event** — `execution_id`,
+`actor`, and optional finer scope keys) plus one opaque **`payload`** (JSON) for
+the type-specific body. You query and order on columns; you read the payload only
+after selecting. Scope keys **nest** (execution is mandatory; step and step-attempt
+narrow within it, null when N/A) — never a web; an event has one required parent
+(execution) and optional nested ones, and is never the child of an artifact (the
+`artifact.created` event *creates* the artifact row).
+
+**Events + git are self-sufficient to rebuild everything; events reference
+meta-code by name + commit, never by database id.** Because projections must be
+rebuildable, every value an event carries to enable that rebuild must survive the
+rebuild. Database-internal ids of *definitions* would not — so events reference
+meta-code by its **authored name** (the user's step code, workflow name, cap name)
+**resolved against the run's stamped commit**, not by any stored id. Git is a
+co-equal source of truth for definitions: the `…started` event stamps
+`{workflow_name, commit, branch, engine_version, input_type}` (scalars and
+references — never the workflow *object* itself; the definition lives in git and
+is read with `git show <commit>:<path>`). Runtime *occurrences* (execution,
+step-attempt) are log-born: an execution gets a minted uuid (fine — its birth is
+an event, so replay reproduces it); a step attempt is identified by the natural
+key `(execution_id, step_name, attempt)`, needing no stored id at all.
+
+**The event vocabulary is engine-owned, typed, and self-describing.** Event types
+are *engine* concepts (the engine records how it ran things) — a **closed enum in
+the core**, owned by the engine version that reads the log, never authored as
+meta-code. Each type has a **typed payload bean** (a dataclass with to/from-JSON):
+the bean *is* the schema, the single place a type's shape is declared, used by both
+the writer and the projection-rebuilder so they cannot drift, and failing loudly on
+an event that does not fit (exactly where a schema-evolution problem should
+surface). A small **registry** maps type → bean, from which the engine offers a
+**self-description capability** (enumerate the event types; describe one type's
+structure) — the Swagger-for-events backbone that `/replay`, the companion, and the
+future versioned schema doc (roadmap 0.1.0) consume to narrate any event without
+hard-coding each type. The discovery capability starts as a thin core function and
+grows a surface when a consumer needs one.
+
+**What actually goes in SQL, in one line:** the **event log** (stored truth,
+never derived), **projections** (stored but rebuildable read-models, written
+transactionally with each event), and **documents/artifacts** referenced by
+**pointer (path + sha)** — the file content itself lives on disk (the
+content-addressed store, §12), never inside the log.
+
+*Illustrative entity sketch (direction, will evolve):*
+`Job ──< WorkflowExecution(stamp: commit/branch/engine_version) ──< StepExecution
+(natural key: execution + step_name + attempt) >── Step(referenced by name@commit)`.
+The **workflow context** (§7) is not a stored truth but the **event-fold**: replay
+a run's events and collect the named values they introduced (run-inputs inline,
+products as pointers) — a derived projection, optionally materialized for fast
+lookup. **Companion** conversations (§14, far future) are future event *types* on
+the same spine, which the uniform envelope already accommodates without a schema
+change.
 
 ## 12. Documents (direction)
 
@@ -447,3 +538,8 @@ question askable. The taxonomy and its ergonomics are not yet designed.
 17. The wheel ships engine code only -- never workflow definitions, configuration,
     or other data. Meta-code is the user's; bundling any would violate the
     engine/meta-code boundary. Examples, if shared, live in a separate repo.
+18. Persistence is event sourcing, not event streaming: the event log is the sole
+    source of truth; all other tables are projections, written transactionally
+    with each event and rebuildable from the log plus git. Events reference
+    meta-code by name + commit, never by database id. Event types are an
+    engine-owned closed enum with typed, self-describing payloads.
