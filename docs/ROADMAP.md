@@ -98,8 +98,8 @@ The app exists, installs, launches, and is honest about what it can't do yet.
   a scripted full demo run end-to-end; `/replay` of a real execution.
 
 ### 0.0.6 — interpretable steps run (the gmlcache seam)
-- The shot path: engine builds `[context, prompt, files]`, resolves nothing fancy
-  yet (explicit client/model in the demo config), invokes
+- The shot path: engine builds `[context, prompt, files]`, resolves the step's
+  tier to a concrete client/model via the `[tiers]` config (below), invokes
   `gmlcache run --context-file … --prompt-file … --store …` in the step's run
   folder, collects stdout/stderr/exit + produced files into the spine.
 - Engine-side purity enforcement v1: the request builder refuses run-specific
@@ -107,19 +107,24 @@ The app exists, installs, launches, and is honest about what it can't do yet.
 - Demo phases 2–3: analyze the fetched page (shot) → generate a summary file
   (shot). **Cassettes recorded once and committed**; CI runs the whole demo
   offline. **⇗ gmlcache** ≥ 0.0.4 (input files) — already shipped.
+- **Tier resolution from config (pulled forward from 0.0.7):** a `[tiers]`
+  section maps `tier → {client, model, effort?}`; `/run` reads it into a real
+  `ShotConfig` so shots run from the REPL with **no stub**. Unseeded -- the
+  clients share no tier nomenclature -- so an unconfigured tier stops the shot
+  honestly. Detection-assisted seeding/reconciliation stays 0.0.7.
 - **Tests:** seam argv construction (never executed); purity violations rejected;
   full demo offline via committed cassettes; cache-miss-in-offline surfaces
   gmlcache's error verbatim.
 
-### 0.0.7 — tiers and reconciliation
-- `[tiers]` config: `tier → {client, model, effort?}` per provider, seeded with
-  documented defaults at init or when a new client appears.
-- Pure `resolve(tier, config) → (client, model, effort)`; per-step override at
-  run time, recorded on the execution.
-- Startup reconcile: seed / configured-but-absent warning / stale-model warning
-  (free drift check), models relayed via `gmlcache models`.
-- **Tests:** resolution table; reconcile table (seed/keep/warn×2); override
-  recorded as event.
+### 0.0.7 — tier reconciliation (detection-driven)
+- The `[tiers]` config + pure `resolve` landed in 0.0.6; this adds the
+  **detection** layer on top.
+- Startup reconcile against installed clients: seed a default for a detected
+  client, warn on configured-but-absent, warn on stale model (free drift
+  check); clients/models relayed via `gmlcache doctor` / `gmlcache models`.
+- Per-step tier override at run time, recorded on the execution.
+- **Tests:** reconcile table (seed/keep/warn×2); per-step override recorded as
+  an event.
 
 ### 0.0.8 — gates and the unattended flag
 - `questions` transport output: present → block, ask at the prompt, record answer

@@ -33,6 +33,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   product into the context-fold — so a shot can consume an earlier step's output.
   Without a `ShotConfig`, a shot step still stops honestly. `run_shot` is
   injectable, so the path is tested without a real client.
+- **Tier resolution from config** (`config.load_tiers`): the optional
+  `[tiers]` section maps each abstract tier (high/medium/low) to a concrete
+  `{client, model, effort?}`. `/run` reads it, builds a real `ShotConfig`
+  (cassette store under `state_dir/cassettes`), and passes it to the
+  orchestrator -- so a REPL user can now run a shot workflow end to end. The
+  mapping is the user's: the clients share no tier nomenclature, so nothing is
+  seeded, and an unconfigured tier stops the shot with a clear message.
+  Pulled forward from 0.0.7; detection-assisted seeding/reconciliation against
+  installed clients remains a later slice.
 
 ## [0.0.5] - 2026-06-12
 

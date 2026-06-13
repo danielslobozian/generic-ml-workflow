@@ -113,3 +113,65 @@ def test_set_value_appends_missing_key_and_section(tmp_path):
     assert doc["ui"]["banner"] == "minimal" and doc["paths"]["flows"] == "/x"
     config.set_value(p, "banner", "panel")  # now present -> replaced
     assert tomllib.loads(p.read_text(encoding="utf-8"))["ui"]["banner"] == "panel"
+
+
+# --- [tiers]: the user's bridge from abstract tier -> concrete client/model ---
+
+from generic_ml_workflow.core.contract import Tier  # noqa: E402
+from generic_ml_workflow.core.shotrunner import Resolution  # noqa: E402
+
+
+def test_tiers_absent_section_is_empty(tmp_path):
+    cfg = _write(tmp_path, '[paths]\nflows = "/f"\n')
+    assert config.load_tiers(cfg) == {}
+
+
+def test_tiers_absent_file_is_empty(tmp_path):
+    assert config.load_tiers(tmp_path / "nope.toml") == {}
+
+
+def test_tiers_parsed_with_and_without_effort(tmp_path):
+    cfg = _write(
+        tmp_path,
+        "[tiers.high]\n"
+        'client = "claude"\nmodel = "sonnet"\neffort = "high"\n\n'
+        "[tiers.low]\n"
+        'client = "cursor"\nmodel = "composer-2.5"\n',
+    )
+    tiers = config.load_tiers(cfg)
+    assert tiers[Tier.HIGH] == Resolution(client="claude", model="sonnet", effort="high")
+    # effort omitted -> None (the client's own default)
+    assert tiers[Tier.LOW] == Resolution(client="cursor", model="composer-2.5", effort=None)
+    assert Tier.MEDIUM not in tiers  # only configured tiers appear
+
+
+def test_tiers_blank_effort_becomes_none(tmp_path):
+    cfg = _write(tmp_path, '[tiers.medium]\nclient = "codex"\nmodel = "gpt-5.5"\neffort = ""\n')
+    assert config.load_tiers(cfg)[Tier.MEDIUM].effort is None
+
+
+def test_tiers_unknown_name_is_ignored(tmp_path):
+    cfg = _write(tmp_path, '[tiers.turbo]\nclient = "claude"\nmodel = "sonnet"\n')
+    assert config.load_tiers(cfg) == {}  # forward-compat: unknown tier names skipped
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[tiers.high]\nmodel = "sonnet"\n',  # missing client
+        '[tiers.high]\nclient = "claude"\n',  # missing model
+        '[tiers.high]\nclient = ""\nmodel = "sonnet"\n',  # empty client
+        '[tiers.high]\nclient = "claude"\nmodel = "sonnet"\neffort = 3\n',  # non-string effort
+    ],
+)
+def test_tiers_malformed_table_raises(tmp_path, body):
+    with pytest.raises(config.ConfigError):
+        config.load_tiers(_write(tmp_path, body))
+
+
+def test_initial_config_documents_tiers_unseeded(tmp_path):
+    text = config.initial_config_text(Path("/f"), Path("/s"), Path("/w"))
+    assert "[tiers." in text
+    # documented but commented: nothing is seeded, so it parses to no tiers
+    cfg = _write(tmp_path, text)
+    assert config.load_tiers(cfg) == {}

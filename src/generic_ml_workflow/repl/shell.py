@@ -462,9 +462,10 @@ class Repl:
             if not st.versioned:
                 self._write("  (flows folder is unversioned -- recording the run as such)")
             orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
+            shot_config = self._build_shot_config()
             self._write(f"running '{workflow.name}'...")
             try:
-                report = orch.run(workflow, run_inputs, st)
+                report = orch.run(workflow, run_inputs, st, shot_config=shot_config)
             except orchestrator.OrchestratorError as exc:
                 self._write(f"  cannot run: {exc}")
                 return
@@ -480,6 +481,23 @@ class Repl:
                 self._write(f"see '/replay {report.execution_id[:12]}' for details.")
         finally:
             store.close()
+
+    def _build_shot_config(self):
+        """Build the shot resolution config from the user's ``[tiers]`` mapping.
+
+        Returns ``None`` when no tiers are configured -- a shot step then stops
+        honestly (the engine never fakes a client/model). Cassettes live under
+        ``state_dir/cassettes`` so a recorded shot replays for free next time.
+        """
+        try:
+            resolutions = config.load_tiers(self._config_file)
+        except config.ConfigError as exc:
+            self._write(f"  ! tiers config problem ({exc}); shots will stop until fixed.")
+            return None
+        if not resolutions:
+            return None
+        cassettes = self.settings.state_dir / "cassettes"
+        return orchestrator.ShotConfig(resolutions=resolutions, store=cassettes)
 
     def _do_replay(self, args: list[str]) -> bool:
         store = self._open_store()

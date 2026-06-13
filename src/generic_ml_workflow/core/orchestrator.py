@@ -67,8 +67,9 @@ class RunReport:
 class ShotConfig:
     """How interpretable steps resolve and cache (DESIGN.md SS9). Tier -> concrete
     (client, model, effort); the cassette ``store`` and ``mode``. Full tier
-    reconciliation against installed clients is slice 0.0.7; here the caller
-    supplies the resolution map explicitly. ``run_shot`` is injectable for tests."""
+    reconciliation against installed clients (detection-assisted seeding) is a
+    later slice; here the caller supplies the resolution map (from [tiers]).
+        supplies the resolution map explicitly. ``run_shot`` is injectable for tests."""
 
     resolutions: dict[Tier, shotrunner.Resolution]
     store: Path
@@ -79,7 +80,7 @@ class ShotConfig:
         if tier not in self.resolutions:
             raise OrchestratorError(
                 f"no client/model configured for tier '{tier.value}' "
-                "(tier reconciliation arrives in slice 0.0.7; supply a resolution)"
+                f"-- add a [tiers.{tier.value}] table (client + model) to your config"
             )
         return self.resolutions[tier]
 
@@ -172,7 +173,7 @@ class Orchestrator:
                     # no shot configuration supplied -> stop honestly, do not fake it
                     report.stopped_reason = (
                         f"step '{step.id}' is a shot, but no client/model resolution was "
-                        "provided (configure tiers -- slice 0.0.7 -- or pass a shot_config)."
+                        "provided -- configure the step's tier in your [tiers] config."
                     )
                     self._store.emit(
                         et.WorkflowExecutionFailed(reason=report.stopped_reason),

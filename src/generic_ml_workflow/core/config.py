@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from generic_ml_workflow.core import paths as paths_mod
+from generic_ml_workflow.core.contract import Tier
+from generic_ml_workflow.core.shotrunner import Resolution
 
 # setting name -> (toml section, toml key, env var)
 _SPEC: dict[str, tuple[str, str, str]] = {
@@ -144,6 +146,55 @@ def load(
     )
 
 
+def load_tiers(config_file: Path | None = None) -> dict[Tier, Resolution]:
+    """Read the optional ``[tiers]`` section: ``tier -> {client, model, effort?}``.
+
+    The engine's abstract tiers (high/medium/low) are bridged to a concrete
+    ``(client, model, effort)`` here. The mapping is the **user's**, because the
+    clients share no tier nomenclature -- claude/codex/cursor each expose only
+    their own model names, never a high/medium/low scale -- so nothing is seeded.
+    An absent ``[tiers]`` section yields an empty map, and a shot step then stops
+    honestly with a clear message. Detection-driven seeding (asking gmlcache what
+    is installed) is a later slice; here the user supplies the bridge explicitly.
+
+    Each configured tier table must give a non-empty ``client`` and ``model``;
+    ``effort`` is optional (omitted -> the client's own default). Unknown tier
+    names are ignored (forward-compatibility). A malformed table raises
+    :class:`ConfigError` with the path and the reason.
+    """
+    cfg_path = config_file if config_file is not None else paths_mod.config_path()
+    if not cfg_path.is_file():
+        return {}
+    doc = _read_file(cfg_path)
+    raw = doc.get("tiers")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{cfg_path}: [tiers] must be a table")
+
+    by_name = {t.value: t for t in Tier}
+    resolutions: dict[Tier, Resolution] = {}
+    for name, table in raw.items():
+        if name not in by_name:
+            continue  # forward-compat: ignore tier names this engine doesn't know
+        if not isinstance(table, dict):
+            raise ConfigError(f"{cfg_path}: [tiers.{name}] must be a table")
+        client = table.get("client")
+        model = table.get("model")
+        effort = table.get("effort")
+        if not isinstance(client, str) or not client.strip():
+            raise ConfigError(f"{cfg_path}: [tiers.{name}] needs a non-empty 'client'")
+        if not isinstance(model, str) or not model.strip():
+            raise ConfigError(f"{cfg_path}: [tiers.{name}] needs a non-empty 'model'")
+        if effort is not None and not isinstance(effort, str):
+            raise ConfigError(f"{cfg_path}: [tiers.{name}] 'effort' must be a string when set")
+        eff = effort if (isinstance(effort, str) and effort.strip()) else None
+        resolutions[by_name[name]] = Resolution(
+            client=client.strip(), model=model.strip(), effort=eff
+        )
+    return resolutions
+
+
 # --- the written form -------------------------------------------------------
 
 
@@ -180,6 +231,30 @@ workspace = "{workspace.as_posix()}"
 [ui]
 # Startup banner style. Allowed: panel, minimal.     env: GMLWORKFLOW_BANNER
 banner = "{banner}"
+
+# [tiers] -- map a step's abstract tier to a CONCRETE client + model.
+#
+# A workflow never names a vendor: each step asks for "high" / "medium" / "low".
+# This is where YOU bridge that tier to a client you actually have installed.
+# There is no shared tier nomenclature across clients (claude has opus/sonnet/
+# haiku, codex has gpt-5.x, cursor has composer-*), so nothing is seeded -- fill
+# in only the tiers your workflows use. A shot whose tier is left blank stops
+# with a clear message rather than guessing. (Detection-assisted defaults, asking
+# gmlcache what is installed, arrive in a later release.) There is no env layer
+# for tiers. Uncomment and edit to your installed clients/models:
+#
+# [tiers.high]
+# client = "claude"      # one of: claude, codex, cursor
+# model  = "sonnet"      # a model that client/account can actually reach
+# effort = ""            # optional; omit to use the client's own default
+#
+# [tiers.medium]
+# client = "codex"
+# model  = "gpt-5.5"
+#
+# [tiers.low]
+# client = "cursor"
+# model  = "composer-2.5"
 """
 
 
