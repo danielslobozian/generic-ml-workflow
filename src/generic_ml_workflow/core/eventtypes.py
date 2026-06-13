@@ -43,6 +43,7 @@ class EventType(str, Enum):
     WORKFLOW_EXECUTION_COMPLETED = "workflow_execution.completed"
     WORKFLOW_EXECUTION_FAILED = "workflow_execution.failed"
     RUN_INPUT_PROVIDED = "run_input.provided"
+    TIER_OVERRIDDEN = "tier.overridden"
     STEP_STARTED = "step.started"
     STEP_COMPLETED = "step.completed"
     STEP_FAILED = "step.failed"
@@ -116,6 +117,19 @@ class RunInputProvided(Payload):
 
 
 @dataclass(frozen=True)
+class TierOverridden(Payload):
+    """A run-time, per-step decision: the user ran this step at a tier other than
+    the one its spec declares. Scalars only -- the chosen tier is a reference, the
+    concrete client/model it resolves to is gmlcache's and is captured in the shot,
+    not here. Emitted (actor=user) only when the chosen tier actually differs."""
+
+    event_type = EventType.TIER_OVERRIDDEN
+    step_name: str
+    from_tier: str  # the tier the step's spec declared
+    to_tier: str  # the tier the user chose for this run
+
+
+@dataclass(frozen=True)
 class StepStarted(Payload):
     event_type = EventType.STEP_STARTED
     step_name: str  # the authored step code, resolved against the run's commit
@@ -172,6 +186,7 @@ _REGISTRY: dict[EventType, type[Payload]] = {
         WorkflowExecutionCompleted,
         WorkflowExecutionFailed,
         RunInputProvided,
+        TierOverridden,
         StepStarted,
         StepCompleted,
         StepFailed,

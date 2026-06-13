@@ -67,3 +67,14 @@ def test_describe_marks_optional_fields():
 def test_event_types_is_the_closed_set():
     assert "artifact.created" in et.event_types()
     assert len(et.event_types()) == len(et.EventType)
+
+
+def test_tier_overridden_registered_and_round_trips():
+    from generic_ml_workflow.core import eventtypes as et
+
+    bean = et.bean_for(et.EventType.TIER_OVERRIDDEN)
+    p = bean(step_name="summarize", from_tier="medium", to_tier="high")
+    again = et.parse_payload(et.EventType.TIER_OVERRIDDEN, p.to_json())
+    assert again.step_name == "summarize" and again.from_tier == "medium"
+    assert again.to_tier == "high"
+    assert "tier.overridden" in et.event_types()

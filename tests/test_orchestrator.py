@@ -317,3 +317,95 @@ def test_unconfigured_tier_is_an_error(tmp_path):
     assert not report.completed and report.failed_step == "s"
     types = [e.event_type for e in store.replay(report.execution_id)]
     assert et.EventType.STEP_FAILED in types
+
+
+# --- 0.0.7: per-step tier override at run time --------------------------------
+
+
+def _recording_shot_runner(captured: list, produces="ok"):
+    """Like _fake_shot_runner, but records the Resolution each shot received, so a
+    test can assert which tier actually fired."""
+
+    def runner_fn(spec, envelope, resolution, run_dir, *, mode, **kw):
+        from pathlib import Path as _P
+        import hashlib
+
+        captured.append((spec.id, resolution.model))
+        rd = _P(run_dir)
+        if rd.exists():
+            import shutil
+
+            shutil.rmtree(rd)
+        rd.mkdir(parents=True)
+        out = spec.outputs[0]
+        (rd / out.filename).write_text(produces, encoding="utf-8")
+        sha = hashlib.sha256(produces.encode()).hexdigest()
+        return shotrunner.ShotResult(
+            step_id=spec.id,
+            attempt=1,
+            exit_code=0,
+            stdout=produces,
+            stderr="",
+            duration_seconds=0.01,
+            outputs=(shotrunner.ProducedOutput(out.name, rd / out.filename, sha),),
+        )
+
+    return runner_fn
+
+
+def _two_tier_config(captured):
+    return ShotConfig(
+        resolutions={
+            Tier.MEDIUM: shotrunner.Resolution("claude", "sonnet"),
+            Tier.HIGH: shotrunner.Resolution("claude", "opus"),
+        },
+        run_shot=_recording_shot_runner(captured),
+    )
+
+
+def _one_shot_wf(tier=Tier.MEDIUM):
+    shot = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=tier,
+        outputs=(_out("summary", "summary.md"),),
+    )
+    return Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+
+
+def test_tier_override_changes_resolution_and_records_event(tmp_path):
+    store = EventStore(":memory:")
+    captured: list = []
+    wf = _one_shot_wf(tier=Tier.MEDIUM)
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        shot_config=_two_tier_config(captured),
+        tier_overrides={"summarize": Tier.HIGH},
+    )
+    assert report.completed
+    # the HIGH resolution fired, not the step's declared MEDIUM
+    assert captured == [("summarize", "opus")]
+    # and the decision is recorded, scoped to the step, as a user action
+    events = store.replay(report.execution_id)
+    ov = next(e for e in events if e.event_type is et.EventType.TIER_OVERRIDDEN)
+    assert ov.payload.from_tier == "medium" and ov.payload.to_tier == "high"
+    assert ov.step_name == "summarize" and ov.actor == "user"
+
+
+def test_no_override_event_when_tier_unchanged(tmp_path):
+    store = EventStore(":memory:")
+    captured: list = []
+    wf = _one_shot_wf(tier=Tier.MEDIUM)
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        shot_config=_two_tier_config(captured),
+        tier_overrides={"summarize": Tier.MEDIUM},  # same as declared -> no change
+    )
+    assert report.completed and captured == [("summarize", "sonnet")]
+    types = [e.event_type for e in store.replay(report.execution_id)]
+    assert et.EventType.TIER_OVERRIDDEN not in types

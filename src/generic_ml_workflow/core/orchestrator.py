@@ -130,6 +130,7 @@ class Orchestrator:
         config_values: dict[str, str] | None = None,
         credentials: set[str] | None = None,
         shot_config: ShotConfig | None = None,
+        tier_overrides: dict[str, Tier] | None = None,
     ) -> RunReport:
         # gate: the definition must be valid (warnings are fine, errors are not)
         result = workflow.validate()
@@ -166,6 +167,7 @@ class Orchestrator:
 
         report = RunReport(execution_id=execution_id, completed=False)
         bindings = self._binding_map(workflow)
+        tier_overrides = tier_overrides or {}
 
         for step in workflow.steps:
             if step.nature is StepNature.INTERPRETABLE:
@@ -180,7 +182,9 @@ class Orchestrator:
                         execution_id=execution_id,
                     )
                     return report
-                if not self._run_shot(step, execution_id, context, bindings, report, shot_config):
+                if not self._run_shot(
+                    step, execution_id, context, bindings, report, shot_config, tier_overrides
+                ):
                     self._store.emit(
                         et.WorkflowExecutionFailed(reason=f"step '{step.id}' failed"),
                         execution_id=execution_id,
@@ -246,10 +250,27 @@ class Orchestrator:
         report.steps_run.append(step.id)
         return True
 
-    def _run_shot(self, step, execution_id, context, bindings, report, shot_config) -> bool:
+    def _run_shot(
+        self, step, execution_id, context, bindings, report, shot_config, tier_overrides=None
+    ) -> bool:
+        tier_overrides = tier_overrides or {}
         self._store.emit(
             et.StepStarted(step_name=step.id), execution_id=execution_id, step_name=step.id
         )
+        # a per-step, run-time tier override is a user decision -- recorded only
+        # when it actually changes the tier (a no-op override is not a change).
+        effective_tier = tier_overrides.get(step.id, step.tier)
+        if effective_tier != step.tier:
+            self._store.emit(
+                et.TierOverridden(
+                    step_name=step.id,
+                    from_tier=step.tier.value,
+                    to_tier=effective_tier.value,
+                ),
+                execution_id=execution_id,
+                step_name=step.id,
+                actor="user",
+            )
         # context prefix: the cap/methodology -- run-agnostic by construction
         prefix_parts = []
         if step.cap:
@@ -277,7 +298,7 @@ class Orchestrator:
             return False
 
         try:
-            resolution = shot_config.resolve(step.tier)
+            resolution = shot_config.resolve(effective_tier)
         except OrchestratorError as exc:
             self._store.emit(
                 et.StepFailed(step_name=step.id, reason=str(exc)),

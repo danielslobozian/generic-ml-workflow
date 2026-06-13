@@ -142,8 +142,8 @@ class Repl:
             ),
             "run": _Verb(
                 Repl._do_run,
-                "/run [<workflow>]",
-                "run a workflow (the run interview)",
+                "/run [<workflow>] [<step>=<tier> ...]",
+                "run a workflow (the run interview); optionally override a step's tier",
             ),
             "replay": _Verb(
                 Repl._do_replay,
@@ -451,6 +451,10 @@ class Repl:
             for e in result.errors:
                 self._write(f"  \u2717 {e}")
             return True
+        # optional per-step tier overrides: `/run <flow> <step>=<tier> ...`
+        overrides = self._parse_tier_overrides(workflow, args[1:])
+        if overrides is None:
+            return True  # a bad override was reported; don't run with it
         # the computed interview: ask for the union of unsatisfied run-inputs
         run_inputs: dict[str, str] = {}
         for name in workflow.run_inputs():
@@ -459,10 +463,40 @@ class Repl:
                 self._write("cancelled.")
                 return True
             run_inputs[name] = answer.strip()
-        self._execute_run(workflow, run_inputs, flows)
+        self._execute_run(workflow, run_inputs, flows, overrides)
         return True
 
-    def _execute_run(self, workflow, run_inputs, flows) -> None:
+    def _parse_tier_overrides(self, workflow, tokens: list[str]) -> dict | None:
+        """Parse ``<step>=<tier>`` tokens into ``{step_id: Tier}``, validated against
+        the workflow. Returns the map (possibly empty) or ``None`` after reporting a
+        problem -- a bad override must stop the run, not be silently dropped."""
+        steps_by_id = {s.id: s for s in workflow.steps}
+        tiers_by_name = {t.value: t for t in contract.Tier}
+        overrides: dict = {}
+        for tok in tokens:
+            if "=" not in tok:
+                self._write(f"  ! bad override '{tok}' -- use '<step>=<tier>' (e.g. analyze=high).")
+                return None
+            step_id, _, tier_name = tok.partition("=")
+            step = steps_by_id.get(step_id)
+            if step is None:
+                self._write(f"  ! override names step '{step_id}', which isn't in this workflow.")
+                return None
+            if step.nature is not contract.StepNature.INTERPRETABLE:
+                self._write(
+                    f"  ! step '{step_id}' isn't a shot -- only shot steps have a tier to override."
+                )
+                return None
+            tier = tiers_by_name.get(tier_name)
+            if tier is None:
+                self._write(
+                    f"  ! '{tier_name}' isn't a tier -- use one of: {', '.join(tiers_by_name)}."
+                )
+                return None
+            overrides[step_id] = tier
+        return overrides
+
+    def _execute_run(self, workflow, run_inputs, flows, overrides=None) -> None:
         store = self._open_store()
         if store is None:
             return
@@ -472,9 +506,14 @@ class Repl:
                 self._write("  (flows folder is unversioned -- recording the run as such)")
             orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
             shot_config = self._build_shot_config()
+            if overrides:
+                for step_id, tier in overrides.items():
+                    self._write(f"  tier override: {step_id} -> {tier.value}")
             self._write(f"running '{workflow.name}'...")
             try:
-                report = orch.run(workflow, run_inputs, st, shot_config=shot_config)
+                report = orch.run(
+                    workflow, run_inputs, st, shot_config=shot_config, tier_overrides=overrides
+                )
             except orchestrator.OrchestratorError as exc:
                 self._write(f"  cannot run: {exc}")
                 return

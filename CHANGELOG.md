@@ -10,6 +10,16 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 ## [Unreleased]
 
 ### Added
+- **Per-step tier override at run time** (DESIGN.md SS9). `/run <flow> <step>=<tier>`
+  runs a chosen step at a different tier than its spec declares, for that run only.
+  It's a user decision that changes the run, so it's recorded as a new
+  `tier.overridden` event (actor `user`, scoped to the step, carrying `from_tier`
+  / `to_tier`) — and **only** when the chosen tier actually differs from the
+  declared one, since a no-op override changes nothing. Overrides are validated
+  before the run (unknown step, non-shot step, or unknown tier each stop the run
+  with a clear message rather than being silently dropped). The override decides
+  which tier the shot resolves against; the concrete client/model it lands on stays
+  gmlcache's, captured in the shot, not duplicated into the event.
 - **Tier reconciliation, detection-driven** (`core.reconcile`, DESIGN.md SS9):
   the engine now anticipates a workflow's failure *before* it runs by comparing
   the user's configured `[tiers]` against what gmlcache reports is actually

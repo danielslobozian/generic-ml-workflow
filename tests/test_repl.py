@@ -548,3 +548,75 @@ def test_tiers_command_when_none_configured(tmp_path):
     cfg = _cfg(tmp_path, '[ui]\nbanner = "panel"\n')
     out = _run(cfg, _TIERS_PRESENT, ["/tiers", "/quit"])
     assert "no [tiers] configured" in out
+
+
+# --- 0.0.7: parsing per-step tier overrides on /run ---------------------------
+
+from generic_ml_workflow.core.contract import (  # noqa: E402
+    InputType,
+    OutputKind,
+    OutputPort,
+    Lifespan,
+    StepNature,
+    StepSpec,
+    Tier,
+    Workflow,
+)
+
+
+def _wf_with_shot_and_exec():
+    shot = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=Tier.MEDIUM,
+        outputs=(OutputPort("s", Lifespan.DURABLE, OutputKind.FILE, "s.md"),),
+    )
+    fetch = StepSpec(
+        id="fetch",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="true",
+        outputs=(OutputPort("f", Lifespan.DURABLE, OutputKind.FILE, "f.txt"),),
+    )
+    return Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot, fetch))
+
+
+def _repl():
+    out: list[str] = []
+    repl = Repl(read=lambda p: None, write=out.append)
+    return repl, out
+
+
+def test_parse_overrides_good():
+    repl, _ = _repl()
+    got = repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["summarize=high"])
+    assert got == {"summarize": Tier.HIGH}
+
+
+def test_parse_overrides_empty_is_empty_map():
+    repl, _ = _repl()
+    assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), []) == {}
+
+
+def test_parse_overrides_unknown_step_aborts():
+    repl, out = _repl()
+    assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["nope=high"]) is None
+    assert any("isn't in this workflow" in line for line in out)
+
+
+def test_parse_overrides_bad_tier_aborts():
+    repl, out = _repl()
+    assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["summarize=turbo"]) is None
+    assert any("isn't a tier" in line for line in out)
+
+
+def test_parse_overrides_on_executable_step_aborts():
+    repl, out = _repl()
+    assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["fetch=high"]) is None
+    assert any("isn't a shot" in line for line in out)
+
+
+def test_parse_overrides_missing_equals_aborts():
+    repl, out = _repl()
+    assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["summarize"]) is None
+    assert any("bad override" in line for line in out)
