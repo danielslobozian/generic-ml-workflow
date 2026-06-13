@@ -15,10 +15,10 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.4 — the event spine + executable building blocks** is the latest release
-(the event-sourced store and vocabulary, `/replay`, plus the stamping primitive
-and the executable-step runner). 0.0.1–0.0.4 are published; next up:
-**0.0.5 — executable steps run** (the orchestrator and the first end-to-end run).
+**0.0.6 — interpretable steps run (the gmlcache seam)** is the latest release:
+shots resolve their tier from `[tiers]` config and run through gmlcache, which
+owns its own store (the engine passes no `--store`/`--output-dir`). 0.0.1–0.0.6
+are published; next up: **0.0.7 — tier reconciliation** (detection-driven).
 
 ---
 

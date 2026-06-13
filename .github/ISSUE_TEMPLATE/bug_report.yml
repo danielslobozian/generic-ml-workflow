@@ -26,7 +26,7 @@ body:
     attributes:
       label: Version
       description: Output of `gmlworkflow --version`.
-      placeholder: "gmlworkflow 0.0.3"
+      placeholder: "gmlworkflow 0.0.6"
     validations:
       required: true
   - type: input
@@ -34,7 +34,7 @@ body:
     attributes:
       label: gmlcache version (if installed)
       description: Output of `gmlcache --version`, or "not installed". Detection and client execution are relayed to it.
-      placeholder: "gmlcache 0.0.5"
+      placeholder: "gmlcache 0.0.7"
     validations:
       required: false
   - type: input

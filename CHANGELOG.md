@@ -9,6 +9,8 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-06-13
+
 ### Added
 - The shot **request envelope** (`core.envelope`, DESIGN.md SS8):
   `[context, prompt, files]`, with **purity enforced in the builder** -- the
