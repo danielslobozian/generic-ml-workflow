@@ -22,6 +22,41 @@ are published; next up: **0.0.7 — tier reconciliation** (detection-driven).
 
 ---
 
+## Design notes — decided 2026-06-13
+
+Settled directions captured so they aren't lost; the slice that builds each is
+noted inline.
+
+- **Layered step config.** A step's effective config resolves through layers,
+  most-specific wins: step default → per-workflow-use override → run-time override.
+  The run-time override shipped in 0.0.7 is the bottom rung. A step *declares* which
+  knobs are overridable — behavioural (tier / effort / force-pause), never structural
+  (id / ports / outputs; changing those is a different step). An override is a thin
+  delta on a step's *use*, never a mutation of the shared definition. (Needs reusable
+  steps + a per-workflow override block — a 0.1.x slice.)
+- **Standalone step authoring** is the target shape: steps (and caps) are first-class
+  files referenced by workflows, not embedded inline. Inline definitions in the
+  workflow YAML are early-slice scaffolding; the end state is authored `steps/` /
+  `caps/` / `workflows/` (foreshadowed by reusable-step ports and 0.2.2 generated
+  bodies). Lands across 0.1.x.
+- **Inspect-pause knob (0.0.8).** Beyond a `questions` gate, a step may be marked to
+  always pause so the user can open and inspect its outputs before the run continues
+  — a distinct reason to pause from "the step asked a question". Folds into the 0.0.8
+  gates / unattended design.
+- **Human-handoff is just an executable step.** A step that prepares something, hands
+  off to the user, then resumes needs no new *kind* of step — an executable step
+  already runs any program and blocks until it exits. The only open question is making
+  the attended case ergonomic (0.0.8), not a new primitive.
+- **Pre-1.0 readability pass.** Before 1.0, a dedicated pass renames for intent
+  (descriptive, format-revealing identifiers; no single-letter or type-named variables)
+  and restructures toward one-thing-per-unit. Code from 0.0.7 on is already written that
+  way; the back-catalogue gets the pass. Open choice for that pass: adopt a lean
+  permissively-licensed typed-decode helper (e.g. msgspec, BSD) for JSON→typed payloads
+  vs. keep stdlib helpers — decided by how many complex nested payloads exist by then.
+  gmlcache stays zero-dependency regardless.
+
+---
+
 ## 0.0.x — the runtime, dumb and solid
 
 ### 0.0.1 — a home that opens
@@ -137,6 +172,10 @@ The app exists, installs, launches, and is honest about what it can't do yet.
 - `questions` transport output: present → block, ask at the prompt, record answer
   event, lift + sweep the file; absent → proceed. Per-step `unattended: true`
   never blocks.
+- **Inspect-pause:** a step may be marked to always pause for the user to open and
+  inspect its outputs, distinct from a `questions` gate. (Human-handoff needs no new
+  step kind — an executable step already blocks until it exits; this is about making
+  the attended case ergonomic.)
 - **Tests:** block/answer/resume round-trip; sweep; unattended bypass; answers
   visible in `/replay`.
 
