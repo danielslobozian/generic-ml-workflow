@@ -72,6 +72,107 @@ def parse_doctor_output(text: str) -> tuple[ClientStatus, ...]:
     return tuple(statuses)
 
 
+@dataclass(frozen=True)
+class ModelInfo:
+    """One model a client relayed, as gmlcache reported it. ``id`` is the string
+    a caller passes as the model; ``name`` is the client's human label."""
+
+    id: str
+    name: str
+    default: bool = False
+    current: bool = False
+
+
+@dataclass(frozen=True)
+class ModelListing:
+    """What gmlcache could learn about one client's models -- three honest
+    outcomes, never a guess (mirrors gmlcache's own ``ModelListing``):
+
+      * client absent          -> ``present=False`` (``supported`` meaningless);
+      * present, no listing     -> ``supported=False`` with a ``reason``;
+      * present and listed      -> ``supported=True`` and ``models`` populated.
+
+    ``models is None`` means "no list was obtained" -- the model drift check must
+    treat that as "cannot verify", never as "model is gone".
+    """
+
+    name: str
+    present: bool
+    supported: bool
+    models: tuple[ModelInfo, ...] | None = None
+    reason: str | None = None
+
+
+def parse_models_output(text: str) -> tuple[ModelListing, ...]:
+    """Parse ``gmlcache models --json`` output into per-client listings.
+
+    Pure and strict-but-forgiving, exactly like :func:`parse_doctor_output`: a
+    JSON list of objects; unknown keys ignored, missing optional keys default.
+    Anything else raises ``ValueError`` (the caller turns that into "cannot
+    verify", i.e. ``None`` -- never a false drift warning).
+    """
+    data = json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("models output is not a JSON list")
+    listings = []
+    for item in data:
+        if not isinstance(item, dict) or "name" not in item:
+            raise ValueError("models output entry is not a client object")
+        raw_models = item.get("models")
+        models: tuple[ModelInfo, ...] | None = None
+        if isinstance(raw_models, list):
+            models = tuple(
+                ModelInfo(
+                    id=str(m.get("id", "")),
+                    name=str(m.get("name", "")),
+                    default=bool(m.get("default", False)),
+                    current=bool(m.get("current", False)),
+                )
+                for m in raw_models
+                if isinstance(m, dict)
+            )
+        listings.append(
+            ModelListing(
+                name=str(item["name"]),
+                present=bool(item.get("present", False)),
+                supported=bool(item.get("supported", False)),
+                models=models,
+                reason=item.get("reason"),
+            )
+        )
+    return tuple(listings)
+
+
+def discover_models(
+    executable: str = "gmlcache", timeout: float = 30.0
+) -> tuple[ModelListing, ...] | None:
+    """Relay ``gmlcache models --json`` -- what models each client reports.
+
+    Never raises. Returns ``None`` whenever the list cannot be obtained at all
+    (gmlcache absent, errored, or unreadable): "the cache cannot retrieve it, so
+    we do not validate against it." A returned tuple is per-client honest -- a
+    client with ``supported=False`` is its own "cannot verify" for that client.
+    """
+    path = shutil.which(executable)
+    if path is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [path, "models", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 -- any launch failure -> "cannot verify"
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return parse_models_output(proc.stdout)
+    except ValueError:
+        return None
+
+
 def discover(executable: str = "gmlcache", timeout: float = 15.0) -> Detection:
     """Run the relay: is gmlcache installed, and what clients does it see?
 

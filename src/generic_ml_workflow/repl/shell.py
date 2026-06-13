@@ -48,11 +48,13 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from generic_ml_workflow import __version__
 from generic_ml_workflow.core import (
     config,
+    contract,
     detect,
     discovery,
     events,
     orchestrator,
     paths,
+    reconcile,
     stamp,
 )
 from generic_ml_workflow.repl import banner
@@ -106,12 +108,14 @@ class Repl:
         read: Callable[[str], str | None] | None = None,
         write: Callable[[str], None] | None = None,
         discover: Callable[[], detect.Detection] | None = None,
+        discover_models: Callable[[], tuple[detect.ModelListing, ...] | None] | None = None,
         config_file: Path | None = None,
     ):
         self._read = read or _default_read
         self._write = write or print
         self._rich_input = read is None  # prompt_toolkit only on the real stdin path
         self._discover = discover or detect.discover
+        self._discover_models = discover_models or detect.discover_models
         self._config_file = config_file  # None -> resolved at startup (env-aware)
         self.detection: detect.Detection | None = None
         self.settings: config.Settings | None = None
@@ -120,6 +124,11 @@ class Repl:
         self._verbs: dict[str, _Verb] = {
             "clients": _Verb(
                 Repl._do_clients, "/clients", "re-run detection and list what gmlcache sees"
+            ),
+            "tiers": _Verb(
+                Repl._do_tiers,
+                "/tiers",
+                "check your configured tiers against installed clients/models",
             ),
             "list": _Verb(
                 Repl._do_list,
@@ -575,6 +584,7 @@ class Repl:
         self._write("asking gmlcache which clients are installed...")
         self.detection = self._discover()
         self._render_detection()
+        self._reconcile_tiers(fetch_models=False)
 
     def _render_detection(self) -> None:
         d = self.detection
@@ -618,6 +628,58 @@ class Repl:
     # --- verb handlers (return True to keep the loop running) ---
     def _do_clients(self, args: list[str]) -> bool:
         self._startup_detection()
+        return True
+
+    def _reconcile_tiers(self, *, fetch_models: bool) -> None:
+        """Advisory: do the configured tiers point at clients/models gmlcache can
+        actually see? Free at startup (client presence only, from the doctor data
+        already in hand); ``/tiers`` adds the model-drift check by fetching the
+        model listings. Nothing here gates anything -- the run stays the truth.
+        """
+        if self.detection is None or not self.detection.gmlcache_present:
+            if fetch_models:
+                self._write("gmlcache is unavailable -- cannot check tiers right now.")
+            return
+        try:
+            tiers = config.load_tiers(self._config_file)
+        except config.ConfigError as exc:
+            self._write(f"  ! [tiers] config problem: {exc}")
+            return
+        if not tiers:
+            if fetch_models:
+                self._write("no [tiers] configured yet -- map each tier to an installed")
+                self._write("client/model in the config file (see the commented template).")
+            return
+
+        listings = self._discover_models() if fetch_models else None
+        issues = reconcile.reconcile(tiers, self.detection.clients, listings)
+
+        if fetch_models:
+            for tier in contract.Tier:
+                res = tiers.get(tier)
+                if res is None:
+                    continue
+                eff = f"  effort={res.effort}" if res.effort else ""
+                self._write(f"  {tier.value:<7} {res.client}/{res.model}{eff}")
+            if listings is None:
+                self._write("  (model drift unchecked -- gmlcache could not list models)")
+            if not issues:
+                self._write("  all configured tiers look reachable.")
+                return
+            for issue in issues:
+                self._write(f"  ! {issue.message}")
+            return
+
+        # startup (free check): stay quiet unless something is actually wrong.
+        if not issues:
+            return
+        self._write("tier check (advisory -- nothing is gated):")
+        for issue in issues:
+            self._write(f"  ! {issue.message}")
+        self._write("")
+
+    def _do_tiers(self, args: list[str]) -> bool:
+        self._reconcile_tiers(fetch_models=True)
         return True
 
     def _do_banner(self, args: list[str]) -> bool:

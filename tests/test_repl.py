@@ -460,3 +460,91 @@ def test_run_unknown_workflow(tmp_path):
     )
     out, _ = drive_at(["/run ghost", "/quit"], PRESENT, cfg)
     assert "no workflow 'ghost'" in out
+
+
+# --- tier reconciliation (0.0.7): anticipate a run's failure in advance ---
+
+from generic_ml_workflow.core.detect import ModelInfo, ModelListing  # noqa: E402
+
+_TIERS_PRESENT = Detection(
+    gmlcache_present=True,
+    clients=(
+        ClientStatus(name="claude", present=True, version="1.0"),
+        ClientStatus(name="codex", present=False, detail="not on PATH"),
+    ),
+)
+
+
+def _cfg(tmp_path, tiers_body: str) -> Path:
+    p = tmp_path / "with-tiers.toml"
+    p.write_text(tiers_body, encoding="utf-8")
+    return p
+
+
+def _run(cfg, detection, lines, models=None):
+    out: list[str] = []
+    script = iter(lines)
+    repl = Repl(
+        read=lambda p: next(script, None),
+        write=out.append,
+        discover=lambda: detection,
+        discover_models=(lambda: models),
+        config_file=cfg,
+    )
+    repl.run()
+    return "\n".join(out)
+
+
+def test_startup_warns_when_configured_client_missing(tmp_path):
+    cfg = _cfg(tmp_path, '[tiers.low]\nclient = "codex"\nmodel = "gpt-5.5"\n')
+    out = _run(cfg, _TIERS_PRESENT, ["/quit"])
+    assert "tier check" in out
+    assert "tier 'low' needs client 'codex'" in out
+
+
+def test_startup_quiet_when_configured_client_present(tmp_path):
+    cfg = _cfg(tmp_path, '[tiers.high]\nclient = "claude"\nmodel = "opus"\n')
+    out = _run(cfg, _TIERS_PRESENT, ["/quit"])
+    assert "tier check" not in out  # free check passes silently
+
+
+def test_tiers_command_shows_mapping_and_reachable(tmp_path):
+    cfg = _cfg(tmp_path, '[tiers.high]\nclient = "claude"\nmodel = "opus"\neffort = "high"\n')
+    models = (
+        ModelListing(
+            name="claude",
+            present=True,
+            supported=True,
+            models=(ModelInfo(id="opus", name="opus"),),
+        ),
+    )
+    out = _run(cfg, _TIERS_PRESENT, ["/tiers", "/quit"], models=models)
+    assert "high" in out and "claude/opus" in out and "effort=high" in out
+    assert "all configured tiers look reachable" in out
+
+
+def test_tiers_command_flags_stale_model(tmp_path):
+    cfg = _cfg(tmp_path, '[tiers.high]\nclient = "claude"\nmodel = "opus-vanished"\n')
+    models = (
+        ModelListing(
+            name="claude",
+            present=True,
+            supported=True,
+            models=(ModelInfo(id="opus", name="opus"),),
+        ),
+    )
+    out = _run(cfg, _TIERS_PRESENT, ["/tiers", "/quit"], models=models)
+    assert "no longer lists" in out and "opus-vanished" in out
+
+
+def test_tiers_command_cannot_verify_when_no_list(tmp_path):
+    cfg = _cfg(tmp_path, '[tiers.high]\nclient = "claude"\nmodel = "anything"\n')
+    out = _run(cfg, _TIERS_PRESENT, ["/tiers", "/quit"], models=None)
+    assert "model drift unchecked" in out
+    assert "no longer lists" not in out  # never a false drift warning
+
+
+def test_tiers_command_when_none_configured(tmp_path):
+    cfg = _cfg(tmp_path, '[ui]\nbanner = "panel"\n')
+    out = _run(cfg, _TIERS_PRESENT, ["/tiers", "/quit"])
+    assert "no [tiers] configured" in out

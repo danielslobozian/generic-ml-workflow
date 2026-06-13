@@ -147,3 +147,91 @@ def test_discover_relays_real_subprocess(tmp_path, monkeypatch):
     d = detect.discover()
     assert d.gmlcache_present and d.gmlcache_detail is None
     assert [c.name for c in d.clients] == ["claude", "codex", "cursor"]
+
+
+# --- the models relay: pure parse + graceful subprocess seam ---
+
+MODELS_FIXTURE = json.dumps(
+    [
+        {
+            "name": "claude",
+            "present": True,
+            "supported": True,
+            "models": [
+                {"id": "opus", "name": "Claude Opus", "default": False, "current": False},
+                {"id": "sonnet", "name": "Claude Sonnet", "default": True, "current": True},
+            ],
+            "reason": None,
+        },
+        {
+            "name": "codex",
+            "present": True,
+            "supported": False,
+            "models": None,
+            "reason": "no listing mechanism",
+        },
+        {"name": "cursor", "present": False, "supported": False, "models": None, "reason": None},
+    ]
+)
+
+
+def test_parse_models_fixture():
+    listings = detect.parse_models_output(MODELS_FIXTURE)
+    assert [m.name for m in listings] == ["claude", "codex", "cursor"]
+    claude, codex, cursor = listings
+    assert claude.supported and claude.models is not None
+    assert {m.id for m in claude.models} == {"opus", "sonnet"}
+    assert codex.present and not codex.supported and codex.models is None
+    assert not cursor.present
+
+
+def test_parse_models_empty_is_valid():
+    assert detect.parse_models_output("[]") == ()
+
+
+@pytest.mark.parametrize("bad", ['{"name": "claude"}', "[42]", "not json"])
+def test_parse_models_rejects_wrong_shapes(bad):
+    with pytest.raises(ValueError):
+        detect.parse_models_output(bad)
+
+
+def test_discover_models_absent_returns_none(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: None)
+    assert detect.discover_models() is None
+
+
+def test_discover_models_nonzero_exit_returns_none(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: "/fake/gmlcache")
+
+    class P:
+        returncode = 3
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: P())
+    assert detect.discover_models() is None
+
+
+def test_discover_models_unreadable_returns_none(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: "/fake/gmlcache")
+
+    class P:
+        returncode = 0
+        stdout = "garbage, not json"
+        stderr = ""
+
+    monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: P())
+    assert detect.discover_models() is None
+
+
+def test_discover_models_happy_path(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: "/fake/gmlcache")
+
+    class P:
+        returncode = 0
+        stdout = MODELS_FIXTURE
+        stderr = ""
+
+    monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: P())
+    listings = detect.discover_models()
+    assert listings is not None and [m.name for m in listings] == ["claude", "codex", "cursor"]

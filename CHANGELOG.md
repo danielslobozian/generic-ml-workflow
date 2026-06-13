@@ -9,6 +9,27 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- **Tier reconciliation, detection-driven** (`core.reconcile`, DESIGN.md SS9):
+  the engine now anticipates a workflow's failure *before* it runs by comparing
+  the user's configured `[tiers]` against what gmlcache reports is actually
+  installed. Two advisory checks, each only as far as the cache can see:
+  **missing client** (a configured tier names a client `gmlcache doctor` does not
+  report present) and **stale model** (a configured tier names a model the client
+  no longer lists, via `gmlcache models`). When gmlcache cannot enumerate a
+  client's models, the model check is skipped -- "cannot verify" is never reported
+  as "model is gone." Nothing is gated; the list is advisory, the run is the
+  truth.
+- The relay grew a **models probe** (`core.detect.discover_models` +
+  `parse_models_output`), the `gmlcache models --json` counterpart to the existing
+  `doctor` relay -- pure parse, graceful on every failure path (returns `None`,
+  i.e. "cannot verify", never a crash or a false warning).
+- The free check (client presence, from the `doctor` data already in hand) runs at
+  **startup** -- silent unless a configured tier is unreachable. The new **`/tiers`**
+  command runs the full reconciliation on demand, fetching the model listings to
+  add the drift check, and prints the whole tier→client/model/effort mapping.
+
+
 ## [0.0.6] - 2026-06-13
 
 ### Added
