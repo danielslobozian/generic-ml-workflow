@@ -125,6 +125,11 @@ The app exists, installs, launches, and is honest about what it can't do yet.
   client, warn on configured-but-absent, warn on stale model (free drift
   check); clients/models relayed via `gmlcache doctor` / `gmlcache models`.
 - Per-step tier override at run time, recorded on the execution.
+- Advisory **gmlcache version check**: warn — never block, the engine does not
+  refuse to launch — when the detected gmlcache is below the floor the engine
+  needs (currently `≥ 0.0.7`, since an older one's cwd-relative store silently
+  loses replay). Reuses the `gmlcache --version` probe the launch check already
+  runs; purely informational.
 - **Tests:** reconcile table (seed/keep/warn×2); per-step override recorded as
   an event.
 
