@@ -15,10 +15,12 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.6 — interpretable steps run (the gmlcache seam)** is the latest release:
-shots resolve their tier from `[tiers]` config and run through gmlcache, which
-owns its own store (the engine passes no `--store`/`--output-dir`). 0.0.1–0.0.6
-are published; next up: **0.0.7 — tier reconciliation** (detection-driven).
+**0.0.7 — tier reconciliation (detection-driven)** is the latest release: startup
+reconciles the configured `[tiers]` against what gmlcache reports installed
+(advisory — missing client, stale model), a step's tier can be overridden per run
+(recorded as an event), and the launch warns when gmlcache is below the floor the
+engine needs. 0.0.1–0.0.7 are published; next up: **0.0.8 — gates and the
+unattended flag**.
 
 ---
 
