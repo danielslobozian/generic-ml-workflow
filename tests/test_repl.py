@@ -620,3 +620,34 @@ def test_parse_overrides_missing_equals_aborts():
     repl, out = _repl()
     assert repl._parse_tier_overrides(_wf_with_shot_and_exec(), ["summarize"]) is None
     assert any("bad override" in line for line in out)
+
+
+# --- 0.0.7: advisory gmlcache-version warning at startup ----------------------
+
+
+def _run_with_version(version_line):
+    out: list[str] = []
+    script = iter(["/quit"])
+    repl = Repl(
+        read=lambda p: next(script, None),
+        write=out.append,
+        discover=lambda: PRESENT,
+        discover_gmlcache_version=lambda: version_line,
+    )
+    repl.run()
+    return "\n".join(out)
+
+
+def test_startup_warns_when_gmlcache_outdated():
+    out = _run_with_version("gmlcache 0.0.5")
+    assert "older than gmlcache 0.0.7" in out
+
+
+def test_startup_silent_when_gmlcache_current():
+    out = _run_with_version("gmlcache 0.0.9")
+    assert "older than" not in out
+
+
+def test_startup_silent_when_gmlcache_version_unknown():
+    out = _run_with_version(None)
+    assert "older than" not in out

@@ -235,3 +235,55 @@ def test_discover_models_happy_path(monkeypatch):
     monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: P())
     listings = detect.discover_models()
     assert listings is not None and [m.name for m in listings] == ["claude", "codex", "cursor"]
+
+
+# --- the gmlcache version advisory: pure parse/compare + graceful probe -------
+
+
+def test_parse_version_tuple_reads_dev_and_plain():
+    assert detect.parse_version_tuple("gmlcache 0.0.7.dev0") == (0, 0, 7)
+    assert detect.parse_version_tuple("1.2.3") == (1, 2, 3)
+
+
+def test_parse_version_tuple_none_when_no_number():
+    assert detect.parse_version_tuple("no version here") is None
+
+
+def test_version_outdated_compares_against_minimum():
+    assert detect.gmlcache_version_is_outdated("gmlcache 0.0.5") is True
+    assert detect.gmlcache_version_is_outdated("gmlcache 0.0.7") is False
+    assert detect.gmlcache_version_is_outdated("gmlcache 0.1.0") is False
+
+
+def test_version_outdated_none_when_unreadable():
+    # cannot verify -> None, so the caller stays silent rather than warn on a guess
+    assert detect.gmlcache_version_is_outdated("mystery build") is None
+
+
+def test_discover_gmlcache_version_absent_returns_none(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: None)
+    assert detect.discover_gmlcache_version() is None
+
+
+def test_discover_gmlcache_version_happy_path(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: "/fake/gmlcache")
+
+    class CompletedProcess:
+        returncode = 0
+        stdout = "gmlcache 0.0.7\n"
+        stderr = ""
+
+    monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: CompletedProcess())
+    assert detect.discover_gmlcache_version() == "gmlcache 0.0.7"
+
+
+def test_discover_gmlcache_version_nonzero_returns_none(monkeypatch):
+    monkeypatch.setattr(detect.shutil, "which", lambda _: "/fake/gmlcache")
+
+    class CompletedProcess:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(detect.subprocess, "run", lambda *a, **k: CompletedProcess())
+    assert detect.discover_gmlcache_version() is None

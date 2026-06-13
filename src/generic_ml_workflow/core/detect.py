@@ -21,6 +21,7 @@ frozen fixtures of gmlcache's output -- no live binary needed in CI.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -201,3 +202,59 @@ def discover(executable: str = "gmlcache", timeout: float = 15.0) -> Detection:
     except ValueError as exc:
         return Detection(gmlcache_present=True, gmlcache_detail=f"unreadable doctor output: {exc}")
     return Detection(gmlcache_present=True, clients=clients)
+
+
+# --- gmlcache version advisory ------------------------------------------------
+#
+# The engine drives gmlcache in the way the 0.0.7 release established (the cache
+# owns its store; the engine passes no --store / --output-dir). Against an older
+# gmlcache that contract does not hold, so the launch warns -- advisory only,
+# never blocking, and silent whenever the version cannot be read.
+
+MINIMUM_GMLCACHE_VERSION = (0, 0, 7)
+
+_VERSION_NUMBER_PATTERN = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def parse_version_tuple(version_text: str) -> tuple[int, int, int] | None:
+    """Pull the first ``X.Y.Z`` out of a version line (``gmlcache 0.0.7.dev0`` ->
+    ``(0, 0, 7)``). Returns None when there is no version number to read, which the
+    caller treats as 'cannot verify' -- never as 'too old'."""
+    version_match = _VERSION_NUMBER_PATTERN.search(version_text)
+    if version_match is None:
+        return None
+    major, minor, patch = version_match.groups()
+    return (int(major), int(minor), int(patch))
+
+
+def discover_gmlcache_version(executable: str = "gmlcache", timeout: float = 15.0) -> str | None:
+    """Relay ``gmlcache --version`` and return its line (e.g. ``gmlcache 0.0.7``).
+    Returns None on any failure -- 'cannot verify', never a crash or false warning."""
+    resolved_path = shutil.which(executable)
+    if resolved_path is None:
+        return None
+    try:
+        completed_process = subprocess.run(
+            [resolved_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 -- any launch failure is just 'cannot verify'
+        return None
+    if completed_process.returncode != 0:
+        return None
+    version_line = completed_process.stdout.strip()
+    return version_line or None
+
+
+def gmlcache_version_is_outdated(
+    version_line: str, minimum_version: tuple[int, int, int] = MINIMUM_GMLCACHE_VERSION
+) -> bool | None:
+    """True when the reported gmlcache version is older than the minimum the engine
+    relies on, False when it meets it, None when the version could not be read (so
+    the caller stays silent rather than warn on a guess)."""
+    reported_version = parse_version_tuple(version_line)
+    if reported_version is None:
+        return None
+    return reported_version < minimum_version

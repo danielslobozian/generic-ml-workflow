@@ -10,6 +10,12 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 ## [Unreleased]
 
 ### Added
+- **Advisory gmlcache-version check at startup.** The engine drives gmlcache the
+  way its 0.0.7 release established (the cache owns its store; the engine passes no
+  `--store` / `--output-dir`). At launch the engine now relays `gmlcache --version`
+  and, if it reads older than 0.0.7, prints a one-line advisory — never blocking,
+  and silent whenever the version cannot be read ("cannot verify, don't guess",
+  the same rule as detection). Pure version parse/compare; the probe is injectable.
 - **Per-step tier override at run time** (DESIGN.md SS9). `/run <flow> <step>=<tier>`
   runs a chosen step at a different tier than its spec declares, for that run only.
   It's a user decision that changes the run, so it's recorded as a new

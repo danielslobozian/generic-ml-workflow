@@ -109,6 +109,7 @@ class Repl:
         write: Callable[[str], None] | None = None,
         discover: Callable[[], detect.Detection] | None = None,
         discover_models: Callable[[], tuple[detect.ModelListing, ...] | None] | None = None,
+        discover_gmlcache_version: Callable[[], str | None] | None = None,
         config_file: Path | None = None,
     ):
         self._read = read or _default_read
@@ -116,6 +117,9 @@ class Repl:
         self._rich_input = read is None  # prompt_toolkit only on the real stdin path
         self._discover = discover or detect.discover
         self._discover_models = discover_models or detect.discover_models
+        self._discover_gmlcache_version = (
+            discover_gmlcache_version or detect.discover_gmlcache_version
+        )
         self._config_file = config_file  # None -> resolved at startup (env-aware)
         self.detection: detect.Detection | None = None
         self.settings: config.Settings | None = None
@@ -624,6 +628,24 @@ class Repl:
         self.detection = self._discover()
         self._render_detection()
         self._reconcile_tiers(fetch_models=False)
+        self._warn_if_gmlcache_outdated()
+
+    def _warn_if_gmlcache_outdated(self) -> None:
+        """Advisory: if gmlcache is older than the release whose behavior the engine
+        relies on, say so once at startup. Never blocks; silent when the version
+        cannot be read (the same 'cannot verify, don't guess' rule as detection)."""
+        if self.detection is None or not self.detection.gmlcache_present:
+            return
+        version_line = self._discover_gmlcache_version()
+        if version_line is None:
+            return
+        if detect.gmlcache_version_is_outdated(version_line):
+            wanted_version = ".".join(str(part) for part in detect.MINIMUM_GMLCACHE_VERSION)
+            self._write(
+                f"  ! {version_line} is older than gmlcache {wanted_version}, which this "
+                f"engine relies on -- update gmlcache to avoid surprises (advisory, not blocking)."
+            )
+            self._write("")
 
     def _render_detection(self) -> None:
         d = self.detection
