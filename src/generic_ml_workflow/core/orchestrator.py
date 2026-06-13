@@ -66,13 +66,13 @@ class RunReport:
 @dataclass
 class ShotConfig:
     """How interpretable steps resolve and cache (DESIGN.md SS9). Tier -> concrete
-    (client, model, effort); the cassette ``store`` and ``mode``. Full tier
-    reconciliation against installed clients (detection-assisted seeding) is a
-    later slice; here the caller supplies the resolution map (from [tiers]).
-        supplies the resolution map explicitly. ``run_shot`` is injectable for tests."""
+    (client, model, effort), plus the resolution ``mode``. The cassette store is
+    the cache's own (config-owned) concern as of gmlcache 0.0.7 -- the engine
+    dictates no store location. Full tier reconciliation against installed clients
+    (detection-assisted seeding) is a later slice; here the caller supplies the
+    resolution map (from [tiers]). ``run_shot`` is injectable for tests."""
 
     resolutions: dict[Tier, shotrunner.Resolution]
-    store: Path
     mode: str = "cache"
     run_shot: object = staticmethod(shotrunner.run_shot)
 
@@ -292,7 +292,6 @@ class Orchestrator:
                 envelope,
                 resolution,
                 run_dir,
-                store=shot_config.store,
                 mode=shot_config.mode,
             )
         except shotrunner.ShotError as exc:

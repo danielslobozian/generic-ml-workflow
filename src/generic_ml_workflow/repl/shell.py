@@ -486,8 +486,8 @@ class Repl:
         """Build the shot resolution config from the user's ``[tiers]`` mapping.
 
         Returns ``None`` when no tiers are configured -- a shot step then stops
-        honestly (the engine never fakes a client/model). Cassettes live under
-        ``state_dir/cassettes`` so a recorded shot replays for free next time.
+        honestly (the engine never fakes a client/model). The cassette store is
+        gmlcache's own (config-owned) concern; the engine dictates no location.
         """
         try:
             resolutions = config.load_tiers(self._config_file)
@@ -496,8 +496,7 @@ class Repl:
             return None
         if not resolutions:
             return None
-        cassettes = self.settings.state_dir / "cassettes"
-        return orchestrator.ShotConfig(resolutions=resolutions, store=cassettes)
+        return orchestrator.ShotConfig(resolutions=resolutions)
 
     def _do_replay(self, args: list[str]) -> bool:
         store = self._open_store()

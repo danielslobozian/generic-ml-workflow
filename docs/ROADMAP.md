@@ -106,7 +106,9 @@ The app exists, installs, launches, and is honest about what it can't do yet.
   material (timestamps, ids, absolute paths) in the context block.
 - Demo phases 2–3: analyze the fetched page (shot) → generate a summary file
   (shot). **Cassettes recorded once and committed**; CI runs the whole demo
-  offline. **⇗ gmlcache** ≥ 0.0.4 (input files) — already shipped.
+  offline. **⇗ gmlcache** ≥ 0.0.7 — the cache owns its store; the engine passes no
+  `--store`/`--output-dir`, so an older gmlcache (whose default store is the cwd)
+  would lose replay.
 - **Tier resolution from config (pulled forward from 0.0.7):** a `[tiers]`
   section maps `tier → {client, model, effort?}`; `/run` reads it into a real
   `ShotConfig` so shots run from the REPL with **no stub**. Unseeded -- the

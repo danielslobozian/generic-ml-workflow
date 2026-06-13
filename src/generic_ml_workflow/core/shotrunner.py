@@ -9,14 +9,17 @@ invokes ``gmlcache run`` in the step's isolated run folder, where gmlcache is th
 caller, the cache, and the replayer.
 
 gmlcache's ``run`` is a transparent passthrough: it writes the client's stdout to
-our stdout, applies produced files into ``--output-dir``, and exits with the
-client's exit code (cache diagnostics only with ``-v``). So this runner captures
-stdout/stderr/exit and then collects the step's declared output files from the run
-folder -- the same collection discipline as the executable runner.
+our stdout, writes produced files into its working directory (which this runner
+sets to the step's run folder), and exits with the client's exit code (cache
+diagnostics only with ``-v``). So this runner captures stdout/stderr/exit and then
+collects the step's declared output files from the run folder -- the same
+collection discipline as the executable runner.
 
-The store (cassette directory) makes runs cacheable and replayable: in offline
-mode a missing cassette is gmlcache's error, surfaced verbatim (invariant: the run
-is the truth). Building the argv is pure and unit-testable; the subprocess call is
+The cassette store makes runs cacheable and replayable, but as of gmlcache 0.0.7
+the store is the cache's own (config-owned) concern: the engine passes neither a
+``--store`` nor an ``--output-dir``, so it dictates no location. In offline mode a
+missing cassette is gmlcache's error, surfaced verbatim (invariant: the run is the
+truth). Building the argv is pure and unit-testable; the subprocess call is
 exercised through an injected runner in tests and a recorded cassette in CI.
 """
 
@@ -82,13 +85,18 @@ def build_argv(
     resolution: Resolution,
     run_dir: Path,
     *,
-    store: Path,
     mode: str = "cache",
     gmlcache: str = "gmlcache",
 ) -> list[str]:
     """Construct the ``gmlcache run`` argv. Pure -- builds the command, runs
     nothing. The context and prompt are written to files in ``run_dir`` by the
-    caller before launch; their paths are passed here."""
+    caller before launch; their paths are passed here.
+
+    No ``--store`` or ``--output-dir``: as of gmlcache 0.0.7 the cassette store is
+    the cache's own (config-owned) concern, and gmlcache writes produced files into
+    its working directory -- which the caller sets to ``run_dir`` -- exactly as the
+    real client would. The engine therefore dictates neither location.
+    """
     context_file = run_dir / "_context.txt"
     prompt_file = run_dir / "_prompt.txt"
     argv = [
@@ -102,12 +110,8 @@ def build_argv(
         str(context_file),
         "--prompt-file",
         str(prompt_file),
-        "--store",
-        str(store),
         "--mode",
         mode,
-        "--output-dir",
-        str(run_dir),
     ]
     if resolution.effort:
         argv += ["--effort", resolution.effort]
@@ -122,7 +126,6 @@ def run_shot(
     resolution: Resolution,
     run_dir: Path,
     *,
-    store: Path,
     mode: str = "cache",
     attempt: int = 1,
     timeout: float = 600.0,
@@ -147,7 +150,7 @@ def run_shot(
     (run_dir / "_context.txt").write_text(envelope.context, encoding="utf-8")
     (run_dir / "_prompt.txt").write_text(envelope.prompt, encoding="utf-8")
 
-    argv = build_argv(envelope, resolution, run_dir, store=store, mode=mode, gmlcache=gmlcache)
+    argv = build_argv(envelope, resolution, run_dir, mode=mode, gmlcache=gmlcache)
 
     start = time.monotonic()
     try:

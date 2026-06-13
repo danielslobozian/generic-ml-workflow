@@ -19,12 +19,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   not.
 - The **gmlcache seam** (`core.shotrunner`): runs an interpretable step (a shot)
   by building the `gmlcache run` argv (client/model/effort, the context/prompt
-  files, the envelope's input-files, the cassette store, the mode) and invoking it
-  in the step's isolated run folder, then collecting the declared outputs. argv
-  construction is pure and unit-tested; the subprocess is injectable. gmlcache's
-  passthrough is preserved -- stdout/stderr/exit captured, an offline cache miss
-  surfaces gmlcache's error verbatim. The engine still executes no model call
-  itself (invariant 3).
+  files, the envelope's input-files, the mode) and invoking it in the step's
+  isolated run folder, then collecting the declared outputs. The engine passes no
+  `--store` and no `--output-dir`: as of **gmlcache ≥ 0.0.7** the cassette store is
+  the cache's own (config-owned) concern, and gmlcache writes produced files into
+  its working directory (the run folder), exactly as the client would -- so the
+  engine dictates neither location. argv construction is pure and unit-tested; the
+  subprocess is injectable. gmlcache's passthrough is preserved -- stdout/stderr/
+  exit captured, an offline cache miss surfaces gmlcache's error verbatim. The
+  engine still executes no model call itself (invariant 3).
 - The orchestrator runs **interpretable (shot) steps** through the seam: when a
   step is a shot, it builds the `[context, prompt, files]` envelope (cap/
   methodology as the run-agnostic context, bound artifact products as input

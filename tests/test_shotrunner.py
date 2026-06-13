@@ -40,12 +40,11 @@ def _env():
 # --- argv (pure) -------------------------------------------------------------
 
 
-def test_argv_has_client_model_files_store_mode(tmp_path):
+def test_argv_has_client_model_files_mode(tmp_path):
     argv = build_argv(
         _env(),
         Resolution("claude", "sonnet", "high"),
         tmp_path,
-        store=tmp_path / "store",
         mode="cache",
     )
     assert argv[:2] == ["gmlcache", "run"]
@@ -54,17 +53,17 @@ def test_argv_has_client_model_files_store_mode(tmp_path):
     assert "--effort" in argv and "high" in argv
     assert "--input-file" in argv and "/in/text.txt" in argv
     assert "--mode" in argv and "cache" in argv
-    assert "--output-dir" in argv
+    assert "--store" not in argv and "--output-dir" not in argv
 
 
 def test_argv_omits_effort_when_absent(tmp_path):
-    argv = build_argv(_env(), Resolution("claude", "sonnet"), tmp_path, store=tmp_path / "s")
+    argv = build_argv(_env(), Resolution("claude", "sonnet"), tmp_path)
     assert "--effort" not in argv
 
 
 def test_argv_repeats_input_file_per_file(tmp_path):
     env = Envelope(context="c", prompt="p", files=("/a.txt", "/b.txt"))
-    argv = build_argv(env, Resolution("codex", "gpt"), tmp_path, store=tmp_path / "s")
+    argv = build_argv(env, Resolution("codex", "gpt"), tmp_path)
     assert argv.count("--input-file") == 2
 
 
@@ -91,7 +90,6 @@ def test_run_collects_declared_output(tmp_path):
         _env(),
         Resolution("claude", "sonnet"),
         tmp_path / "run",
-        store=tmp_path / "store",
         _runner=fake_runner,
     )
     assert result.ok
@@ -115,7 +113,6 @@ def test_run_writes_context_and_prompt_files(tmp_path):
         _env(),
         Resolution("claude", "m"),
         tmp_path / "run",
-        store=tmp_path / "s",
         _runner=fake_runner,
     )
     assert seen["context"] == "You are a summarizer."
@@ -132,7 +129,6 @@ def test_run_missing_output_is_an_error(tmp_path):
             _env(),
             Resolution("claude", "m"),
             tmp_path / "run",
-            store=tmp_path / "s",
             _runner=fake_runner,
         )
 
@@ -146,7 +142,6 @@ def test_run_surfaces_gmlcache_error_via_nonzero_exit(tmp_path):
         _env(),
         Resolution("claude", "m"),
         tmp_path / "run",
-        store=tmp_path / "s",
         _runner=fake_runner,
     )
     assert not result.ok and result.exit_code == 1
@@ -157,7 +152,7 @@ def test_run_surfaces_gmlcache_error_via_nonzero_exit(tmp_path):
 def test_run_rejects_non_shot_step(tmp_path):
     exe = StepSpec(id="x", nature=StepNature.EXECUTABLE, entrypoint="true")
     with pytest.raises(ShotError, match="not an interpretable"):
-        run_shot(exe, _env(), Resolution("c", "m"), tmp_path / "run", store=tmp_path / "s")
+        run_shot(exe, _env(), Resolution("c", "m"), tmp_path / "run")
 
 
 def test_run_missing_gmlcache_binary_is_clear(tmp_path):
@@ -170,6 +165,5 @@ def test_run_missing_gmlcache_binary_is_clear(tmp_path):
             _env(),
             Resolution("c", "m"),
             tmp_path / "run",
-            store=tmp_path / "s",
             _runner=boom,
         )

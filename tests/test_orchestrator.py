@@ -193,7 +193,7 @@ def _fake_shot_runner(produces: str):
     """A stand-in for shotrunner.run_shot that simulates gmlcache producing the
     step's declared output, without any real client."""
 
-    def runner_fn(spec, envelope, resolution, run_dir, *, store, mode, **kw):
+    def runner_fn(spec, envelope, resolution, run_dir, *, mode, **kw):
         from pathlib import Path as _P
 
         rd = _P(run_dir)
@@ -223,7 +223,6 @@ def _fake_shot_runner(produces: str):
 def _shot_config(tmp_path, produces="a summary", mode="cache"):
     return ShotConfig(
         resolutions={Tier.MEDIUM: shotrunner.Resolution("claude", "sonnet")},
-        store=tmp_path / "store",
         mode=mode,
         run_shot=_fake_shot_runner(produces),
     )
