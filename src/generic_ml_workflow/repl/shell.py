@@ -125,6 +125,7 @@ class Repl:
         self.settings: config.Settings | None = None
         self._session: dict[str, object] = {}  # in-session overrides (the "flag" layer)
         self._banner_style = banner.DEFAULT
+        self._workflow_names: tuple[str, ...] = ()  # for /run + /validate tab-completion
         self._verbs: dict[str, _Verb] = {
             "clients": _Verb(
                 Repl._do_clients, "/clients", "re-run detection and list what gmlcache sees"
@@ -189,6 +190,7 @@ class Repl:
         if self.settings is not None and self.settings.config_file is None:
             self._first_run_interview()
         self._startup_detection()
+        self._refresh_workflow_names()
         reader = self._build_reader()
         keep = True
         while keep:
@@ -352,6 +354,7 @@ class Repl:
         flows = self._flows_dir()
         if flows is None:
             return True
+        self._refresh_workflow_names()
         found = discovery.discover_workflows(flows)
         if not found:
             self._write(f"no workflow definitions in {flows}")
@@ -428,6 +431,7 @@ class Repl:
         flows = self._flows_dir()
         if flows is None:
             return True
+        self._refresh_workflow_names()
         found = discovery.discover_workflows(flows)
         runnable = [d for d in found if d.workflow is not None]
         if not runnable:
@@ -780,6 +784,19 @@ class Repl:
         return False
 
     # --- completion (pure logic; prompt_toolkit and tests both use it) ---
+    def _refresh_workflow_names(self) -> None:
+        """Cache the discoverable workflow names for /run and /validate tab-completion.
+        A convenience only -- never fatal; loadable definitions only."""
+        if self.settings is None:
+            self._workflow_names = ()
+            return
+        discovered = discovery.discover_workflows(self.settings.flows_dir)
+        self._workflow_names = tuple(
+            definition.name
+            for definition in discovered
+            if definition.workflow is not None and definition.name
+        )
+
     def _completions(self, line: str, begidx: int) -> list[str]:
         """The candidate values for the word at ``begidx``. First token -> a verb;
         an argument to ``/banner`` -> a style name. Honours a leading slash. Pure:
@@ -795,6 +812,8 @@ class Repl:
         head = head[1:] if head.startswith("/") else head
         if head == "banner" and len(before) == 1:
             return [n for n in [*banner.names(), "list"] if n.startswith(text)]
+        if head in ("run", "validate") and len(before) == 1:
+            return [name for name in self._workflow_names if name.startswith(text)]
         return []
 
     def _completion_meta(self, value: str) -> str:

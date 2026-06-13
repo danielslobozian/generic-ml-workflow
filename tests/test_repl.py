@@ -651,3 +651,25 @@ def test_startup_silent_when_gmlcache_current():
 def test_startup_silent_when_gmlcache_version_unknown():
     out = _run_with_version(None)
     assert "older than" not in out
+
+
+# --- tab-completion for /run and /validate workflow names ---------------------
+
+
+def test_run_completes_workflow_names():
+    repl, _ = _repl()
+    repl._workflow_names = ("feature", "review")
+    assert set(repl._completions("/run ", len("/run "))) == {"feature", "review"}
+    assert repl._completions("/run fea", len("/run ")) == ["feature"]
+
+
+def test_validate_completes_workflow_names():
+    repl, _ = _repl()
+    repl._workflow_names = ("feature",)
+    assert repl._completions("/validate ", len("/validate ")) == ["feature"]
+
+
+def test_no_workflow_completion_for_other_commands():
+    repl, _ = _repl()
+    repl._workflow_names = ("feature",)
+    assert repl._completions("/status ", len("/status ")) == []

@@ -10,6 +10,10 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 ## [Unreleased]
 
 ### Added
+- **Tab-completion for `/run` and `/validate` workflow names.** Pressing Tab after
+  `/run` (or `/validate`) now offers the workflow names found in the flows folder,
+  matching as you type. The names are cached at startup and refreshed on `/list`
+  and `/run`; the completer itself stays pure (it reads the in-memory list).
 - **Advisory gmlcache-version check at startup.** The engine drives gmlcache the
   way its 0.0.7 release established (the cache owns its store; the engine passes no
   `--store` / `--output-dir`). At launch the engine now relays `gmlcache --version`
