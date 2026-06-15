@@ -19,8 +19,9 @@ yet, the gmlcache slice ships first.
 reconciles the configured `[tiers]` against what gmlcache reports installed
 (advisory — missing client, stale model), a step's tier can be overridden per run
 (recorded as an event), and the launch warns when gmlcache is below the floor the
-engine needs. 0.0.1–0.0.7 are published; next up: **0.0.8 — gates and the
-unattended flag**.
+engine needs. 0.0.1–0.0.7 are published; next up: **0.0.8 — running for real:
+run modes, background execution, clean stop** (run modes and the execution-context
+model are now defined in DESIGN §7 and §11).
 
 ---
 
@@ -210,16 +211,30 @@ The app exists, installs, launches, and is honest about what it can't do yet.
 - **Tests:** reconcile table (seed/keep/warn×2); per-step override recorded as
   an event.
 
-### 0.0.8 — gates and the unattended flag
-- `questions` transport output: present → block, ask at the prompt, record answer
-  event, lift + sweep the file; absent → proceed. Per-step `unattended: true`
-  never blocks.
-- **Inspect-pause:** a step may be marked to always pause for the user to open and
-  inspect its outputs, distinct from a `questions` gate. (Human-handoff needs no new
-  step kind — an executable step already blocks until it exits; this is about making
-  the attended case ergonomic.)
-- **Tests:** block/answer/resume round-trip; sweep; unattended bypass; answers
-  visible in `/replay`.
+### 0.0.8 — running for real: run modes, background execution, clean stop
+- **Run modes** — one run-level selector, three positions: full-auto / full-manual
+  / questions-only (DESIGN §7). Questions-only is the `questions` gate (present →
+  block, ask, record the answer as an event, sweep; absent → proceed); full-auto
+  generalizes per-step `unattended` to the whole run; full-manual checkpoints after
+  every step.
+- **Background execution + live progress** — a run advances on a background worker
+  while the prompt stays live and typable; the engine announces advancement through
+  a caller-supplied **progress reporter**; the surface renders it. The engine stays
+  synchronous and thread-unaware (DESIGN §11; invariant 24).
+- **Clean stop (spans gmlcache)** — the user can stop a run; at a boundary the
+  engine simply halts, and mid-step it signals the cache subprocess, which tears
+  down its client. The step is recorded interrupted and the run stays resumable.
+  **⇗ gmlcache: graceful stop on signal must land** (see the cache roadmap) — the
+  engine signals, the cache owns the teardown.
+- **Execution context + resume** — a run can be resumed; its live state is read from
+  the projections (DESIGN §11); starting is resume-from-empty; the step is the unit
+  of resume.
+- Deferred: per-step / per-cap mode refinement (layered config, 0.1.x); the launch
+  chooser's multi-execution presentation (relates to jobs, 0.0.12).
+- **Tests:** questions-only round-trip (block / answer / resume; sweep; answers in
+  `/replay`); full-auto bypass; a background run emits progress events and leaves
+  the prompt responsive; stop at a boundary; stop mid-step cascades and records the
+  step interrupted; resume rebuilds the execution context from the projections.
 
 ### 0.0.9 — credentials and roles
 - Role config + separate `credentials.toml` (chmod 600, enforced), env-var
@@ -248,6 +263,11 @@ The app exists, installs, launches, and is honest about what it can't do yet.
 ### 0.0.12 — jobs become persistent
 - Create/select a job at `/run`; executions regroup by job; `/cost` and
   `/replay` take a job as subject; resume an interrupted execution.
+- **The launch chooser**: launching on an input offers — resume an existing
+  execution or start a new one, with several executions coexisting on the same
+  workflow + input (each keeping its own documents) and the user free to switch
+  back to an earlier one and resume it. The choosing/showing is the surface's; the
+  engine only exposes list / start-new / resume (invariant 1).
 - **Tests:** regrouping; resume from event stream; cross-launch persistence.
 
 ---

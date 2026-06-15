@@ -229,6 +229,24 @@ the answer as an event; absent → proceed. There is no separate gate machinery.
 step marked **unattended** never blocks: it proceeds (or fails) without asking,
 which is what makes fully auto-advancing workflows possible.
 
+**Run modes — the run-wide posture.** How a run advances from one step to the
+next is *one run-level selector with three positions*, chosen at launch — not
+three independent switches. **Full-auto**: the run never stops; it takes its best
+default on anything unclear and does not halt to wait even on a step's failure —
+for when you are away, or trust the run and want it uninterrupted. **Full-manual**:
+the run stops at a **checkpoint** after *every* step, whether or not the step asked
+anything, so you can read each result and may re-run a step against a different
+tier to compare — for first contact with a workflow, especially one you did not
+write. **Questions-only**: the run flows freely and stops *only* where a step is
+genuinely unsure and emits a `questions` file — the gear you graduate into as
+trust builds. The three are not new machinery: questions-only *is* the question
+gate above; full-auto *is* `unattended` lifted from one step to the whole run;
+full-manual *is* a checkpoint generalized to every step. A **checkpoint** is any
+point where the run pauses and can later resume (§11). Per-step or per-cap
+refinement — one unattended step inside an otherwise-manual run — is layered-config
+work (roadmap 0.1.x); the run-wide selector comes first. "Play the role yourself"
+at warm-up is the per-role face of full-manual on that step.
+
 **Personalizing a cap at warm-up.** The same warm-up offers, per cap a workflow
 uses, a three-way choice: run it **generic** (testing the workflow, not yourself),
 **project your context** onto it (the app extracts the role-relevant slice of your
@@ -341,6 +359,31 @@ query, `WHERE execution_id = ? ORDER BY seq`. The same value doubles as the
 `workflow_executions` projection primary key — one value, three roles (minted in
 code, first persisted by the `…started` event, scope key on every later event),
 with no chicken-and-egg because it precedes the first event.
+
+**The execution context is a read-model; the engine holds no run state.** At any
+moment a run's live state — *where it is* (which steps completed, which failed,
+the current step and its status), its *accumulated values* (the context-fold of
+run-inputs and product pointers), and *what, if anything, it waits on* (nothing, a
+user's answer to a `questions` gate, or a manual checkpoint) — is the **execution
+context**: one execution's slice of the projections (`workflow_executions`,
+`step_executions`, `artifacts`, gate questions), read directly. It is never a
+separately persisted blob and never held in the engine between actions. The engine
+is **stateless**: each action reads the execution context, advances one step,
+appends its events (the projections update in the same transaction, above), and
+forgets. **Starting a run is resuming from an empty execution context** — there is
+no privileged "fresh start" path, only "advance from where this context says we
+are", with step zero the empty case. **Resume reads the projections, not a
+re-execution**: event sourcing makes the log the *authority* and the *rebuild*
+path, but normal operation reads the project-on-append read-models — it does not
+replay the log each time a run is reopened. The **step is the unit of resume**: a
+run interrupted mid-step re-runs that step on resume — cheap when the cache already
+holds the completed call (invariant 3); finer partial-step bookkeeping is
+deliberately deferred to real use. Because the engine is stateless and the state
+*is* the projections, advancing on a background worker, pausing, quitting the app,
+and resuming later are one operation seen at different moments. The engine takes a
+caller-supplied **progress reporter** (where it announces advancement) and a **stop
+check** (whether to halt at the next boundary) and knows nothing of threads,
+screens, or the keyboard — those belong to the surface (invariant 1).
 
 **The event envelope is uniform columns + a heterogeneous payload.** Event bodies
 differ by type, so we do not force a pure-SQL structure onto them. Each event has
@@ -637,7 +680,11 @@ silently recomputes.
    prompts, context, or cassettes.
 8. A workflow declares tiers, never vendors.
 9. Purity of the request envelope is enforced, not hoped for.
-10. The question file is the gate; unattended steps never block.
+10. How a run advances is one run-level selector with three positions —
+    full-auto (never blocks), full-manual (checkpoints after every step),
+    questions-only (blocks only on a `questions` file). The question file is the
+    gate; unattended/full-auto never blocks. Per-step refinement is later
+    (layered config).
 11. Events are decisions; logs are diagnostics; event payloads hold pointers,
     never blobs.
 12. Tokens and usage are the currency; no pricing scraper.
@@ -667,3 +714,14 @@ silently recomputes.
     rules derived from it do, and only the user ever edits the snapshot.
 22. Adaptation — seeding and rule accrual — is the default; a single profile switch
     ("stay generic") mutes it.
+23. The execution context — a run's live state (position, accumulated values, what
+    it waits on) — is a read-model of the projections, never a separate blob and
+    never held in the engine. The engine is stateless: every action reads the
+    context, advances, appends events, forgets. Starting is resuming from an empty
+    context; resume reads the projections, not a log replay. The step is the unit
+    of resume.
+24. The engine is synchronous and surface-unaware: it takes a progress reporter and
+    a stop check, and knows nothing of threads, screens, or input. Concurrency,
+    live rendering, and interruption are the surface's. A clean stop cascades — the
+    engine signals the cache subprocess it spawned and the cache tears down the
+    client (invariant 3); the engine never reaches past the cache.

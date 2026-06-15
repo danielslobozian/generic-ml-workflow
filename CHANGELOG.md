@@ -10,6 +10,17 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 ## [Unreleased]
 
 ### Changed
+- **Documentation — run modes, the execution context, and resume.** DESIGN §7
+  defines **run modes** (one run-level selector: full-auto / full-manual /
+  questions-only, generalizing the gate and `unattended`); §11 defines the
+  **execution context** (a run's live state as a read-model of the projections —
+  the engine is stateless, starting is resuming from empty, the step is the unit of
+  resume) and the engine's surface-unaware progress-reporter / stop-check shape;
+  invariant 10 is generalized to run modes and invariants 23–24 are added. ROADMAP
+  reshapes 0.0.8 into *running for real — run modes, background execution, live
+  progress, clean stop* (the clean stop spans gmlcache), and records the
+  resume-or-new multi-execution launch choice under 0.0.12. Documentation only; no
+  runtime change.
 - **Documentation — the user / projection model.** DESIGN.md gains §16 (*the user,
   the context snapshot, and projection*) and four matching invariants; §§6, 7, 14,
   15 updated to reference it — caps' playing/accompanying natures, rule-as-projection,
