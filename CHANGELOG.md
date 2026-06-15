@@ -9,6 +9,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Changed
+- **Documentation — the user / projection model.** DESIGN.md gains §16 (*the user,
+  the context snapshot, and projection*) and four matching invariants; §§6, 7, 14,
+  15 updated to reference it — caps' playing/accompanying natures, rule-as-projection,
+  seed vs app rules, the raw snapshot never reaching the model, the placement
+  taxonomy resolved, and stale-rule detection on snapshot change. ROADMAP records
+  the 2026-06-15 design notes. Documentation only; no runtime change.
+
 ## [0.0.7] - 2026-06-13
 
 ### Added
