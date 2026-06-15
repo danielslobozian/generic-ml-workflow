@@ -251,6 +251,18 @@ class EventStore:
                         e.occurred_at,
                     ),
                 )
+        elif e.event_type is EventType.ANSWER_SUBMITTED:
+            c.execute(
+                "UPDATE gate_questions SET status=?,answer=?,answered_at=? "
+                "WHERE execution_id=? AND question_id=?",
+                (
+                    e.payload.status,
+                    e.payload.answer,
+                    e.occurred_at,
+                    e.execution_id,
+                    e.payload.question_id,
+                ),
+            )
 
     # --- reads ---
     def gate_questions(self, execution_id: str) -> list[dict]:

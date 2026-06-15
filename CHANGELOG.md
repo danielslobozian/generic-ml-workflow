@@ -59,6 +59,17 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   `gate_questions` projection table, one row per question per run (pending →
   answered/skipped), projected from the gate events like the other read-models.
   Answering the questions and feeding them back into the run is the next slice.
+- **Questions gate — answering and consumption (the loop closes).** `/answer
+  [<execution>]` walks a blocked run's pending questions one at a time at the prompt
+  (like the launch interview), recording each as `answer.submitted` (answered, or
+  skipped for an optional one) and updating the gate table; the questions courier
+  file is then swept. Each answer re-enters the run's context under its question id,
+  and a new **`answer` input kind** lets a later step declare it consumes a specific
+  answer by that id — so a step can ask "tone?", you answer "formal", and a
+  downstream step reads `tone` and uses it. `/resume` refuses while a blocking
+  question is still unanswered, then continues. This completes the questions gate and
+  the 0.0.8 run-modes work; a shot (rather than an executable) consuming an answer is
+  a later refinement.
 
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7

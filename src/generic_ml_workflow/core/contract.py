@@ -84,6 +84,7 @@ class Requirement(str, Enum):
     CONFIG = "config"  # from the user's configuration
     CREDENTIAL = "credential"  # a credential role (presence only; never the token)
     ARTIFACT = "artifact"  # a named product an earlier step must contribute
+    ANSWER = "answer"  # a gate answer, by question id (filled mid-run, not at launch)
 
 
 class Lifespan(str, Enum):

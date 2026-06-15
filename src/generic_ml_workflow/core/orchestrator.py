@@ -453,6 +453,17 @@ class Orchestrator:
                 + "\n  ".join(result.errors)
             )
         context, completed, recorded_mode = self._rebuild(execution_id)
+        # a blocking gate must be answered before the run can move past it
+        unanswered = [
+            q
+            for q in self._store.gate_questions(execution_id)
+            if q["status"] == "pending" and q["blocking"]
+        ]
+        if unanswered:
+            raise OrchestratorError(
+                f"{len(unanswered)} blocking question(s) still unanswered -- "
+                "answer them first ('/answer'), then resume."
+            )
         first_unfinished = next((s.id for s in workflow.steps if s.id not in completed), None)
         self._store.emit(
             et.WorkflowExecutionResumed(from_step=first_unfinished),
@@ -486,6 +497,11 @@ class Orchestrator:
                 context[event.payload.name] = Path(event.payload.path)
             elif event.event_type is et.EventType.STEP_COMPLETED:
                 completed.add(event.payload.step_name)
+            elif event.event_type is et.EventType.ANSWER_SUBMITTED:
+                # a gate answer re-enters the context under its question id (B):
+                # a downstream ANSWER port reads it by that name.
+                if event.payload.status == "answered":
+                    context[event.payload.question_id] = event.payload.answer
         return context, completed, mode
 
     @staticmethod
@@ -684,6 +700,15 @@ class Orchestrator:
                 product = bindings[(step.id, port.name)]
                 resolved[port.name] = context[product]
             elif port.requirement is Requirement.RUN_INPUT:
+                resolved[port.name] = context[port.name]
+            elif port.requirement is Requirement.ANSWER:
+                # a gate answer, by question id -- folded into the context from
+                # answer.submitted. Missing means the gate wasn't answered: fail loud.
+                if port.name not in context:
+                    raise OrchestratorError(
+                        f"step '{step.id}' needs the answer to '{port.name}', "
+                        "but no answer was provided at the gate."
+                    )
                 resolved[port.name] = context[port.name]
             # CONFIG / CREDENTIAL resolution lands with their slices
         return resolved

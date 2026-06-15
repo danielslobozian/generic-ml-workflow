@@ -741,3 +741,73 @@ def test_questions_gate_is_bypassed_in_full_auto(tmp_path):
     types = [e.event_type for e in store.replay(report.execution_id)]
     assert et.EventType.QUESTIONS_ASKED not in types  # nothing asked
     assert store.gate_questions(report.execution_id) == []  # no gate rows
+
+
+# --- 0.0.8 (3b): answer the gate, feed it back, a later step consumes it ----------
+
+
+def _consult_workflow(scripts: Path) -> Workflow:
+    """ask -> apply. `ask` asks for a tone (a questions courier); `apply` declares an
+    ANSWER input port 'tone' and writes it out -- so the human's answer reaches it."""
+    ask_sh = scripts / "ask.sh"
+    ask_sh.write_text(
+        'printf \'%s\' \'[{"id":"tone","text":"Tone?","blocking":true}]\' > q.json\n',
+        encoding="utf-8",
+    )
+    apply_sh = scripts / "apply.sh"
+    apply_sh.write_text("printf 'tone=%s' \"$(cat tone)\" > applied.txt\n", encoding="utf-8")
+    ask = StepSpec(
+        id="ask",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(ask_sh),
+        outputs=(
+            OutputPort(
+                name="questions",
+                lifespan=Lifespan.TRANSPORT,
+                kind=OutputKind.QUESTIONS,
+                filename="q.json",
+            ),
+        ),
+    )
+    apply = StepSpec(
+        id="apply",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(apply_sh),
+        inputs=(InputPort("tone", Requirement.ANSWER),),
+        outputs=(_out("applied", "applied.txt"),),
+    )
+    return Workflow(name="consult", input_type=InputType.FREESTYLE, steps=(ask, apply))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_answer_feeds_back_and_a_later_step_consumes_it(tmp_path):
+    store = EventStore(":memory:")
+    wf = _consult_workflow(tmp_path)
+    orch = Orchestrator(store, tmp_path / "ws")
+
+    first = orch.run(wf, {}, STAMP, mode=RunMode.QUESTIONS_ONLY)
+    assert not first.completed and first.awaiting[0]["id"] == "tone"
+
+    # resuming before answering a blocking question is refused
+    with pytest.raises(OrchestratorError, match="unanswered"):
+        orch.resume(first.execution_id, wf)
+
+    # answer it (as /answer would record), then resume
+    store.emit(
+        et.AnswerSubmitted(question_id="tone", answer="formal", status="answered"),
+        execution_id=first.execution_id,
+        actor="user",
+    )
+    second = orch.resume(first.execution_id, wf)
+    assert second.completed
+    assert second.steps_run == ["apply"]
+
+    rows = store.gate_questions(first.execution_id)
+    assert rows[0]["status"] == "answered" and rows[0]["answer"] == "formal"
+
+    # the consuming step actually read the answer -> its output carries 'formal'
+    artifacts = [
+        e for e in store.replay(first.execution_id) if e.event_type is et.EventType.ARTIFACT_CREATED
+    ]
+    applied = next(e for e in artifacts if e.payload.name == "applied")
+    assert Path(applied.payload.path).read_text().strip() == "tone=formal"

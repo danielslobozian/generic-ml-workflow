@@ -859,3 +859,55 @@ def test_run_rejects_conflicting_modes(tmp_path):
     _write_demo(flows)
     out, _ = drive_at(["/run demo --manual --questions", "/quit"], PRESENT, cfg)
     assert "different run modes" in out
+
+
+def _write_consult(flows):
+    import subprocess as sp
+
+    (flows / "ask.sh").write_text(
+        'printf \'%s\' \'[{"id":"tone","text":"Tone?","blocking":true}]\' > q.json\n',
+        encoding="utf-8",
+    )
+    (flows / "apply.sh").write_text(
+        "printf 'tone=%s' \"$(cat tone)\" > applied.txt\n", encoding="utf-8"
+    )
+    (flows / "consult.yaml").write_text(
+        "name: consult\ninput_type: freestyle\nsteps:\n"
+        f"  - id: ask\n    nature: executable\n    entrypoint: {flows / 'ask.sh'}\n"
+        "    outputs:\n"
+        "      - {name: questions, lifespan: transport, kind: questions, filename: q.json}\n"
+        f"  - id: apply\n    nature: executable\n    entrypoint: {flows / 'apply.sh'}\n"
+        "    inputs:\n      - {name: tone, require: answer}\n"
+        "    outputs:\n      - {name: applied, lifespan: durable, kind: file, filename: applied.txt}\n",
+        encoding="utf-8",
+    )
+    sp.run(["git", "-C", str(flows), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(flows), "commit", "-qm", "consult"], check=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_questions_gate_answer_resume_end_to_end(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_consult(flows)
+    out, _ = drive_at(
+        ["/run consult --questions", "/answer", "formal", "/resume", "/quit"], PRESENT, cfg
+    )
+    assert "is asking" in out  # the gate fired
+    assert "Tone?" in out  # the question was shown
+    assert "recorded 1 answer" in out  # /answer walked it
+    assert "resuming 'consult'" in out  # /resume picked it up
+    assert "\u2713 apply" in out and "completed" in out  # the consumer ran, run finished
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_resume_refuses_while_a_blocking_question_is_unanswered(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_consult(flows)
+    out, _ = drive_at(["/run consult --questions", "/resume", "/quit"], PRESENT, cfg)
+    assert "unanswered" in out  # resume refused; answer first
+
+
+def test_answer_with_nothing_pending_says_so(tmp_path):
+    cfg, _ = _run_cfg(tmp_path)
+    out, _ = drive_at(["/answer", "/quit"], PRESENT, cfg)
+    assert "no questions are awaiting an answer" in out

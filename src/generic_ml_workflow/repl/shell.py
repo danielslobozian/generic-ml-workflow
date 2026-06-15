@@ -55,6 +55,7 @@ from generic_ml_workflow.core import (
     detect,
     discovery,
     events,
+    eventtypes,
     orchestrator,
     paths,
     reconcile,
@@ -165,6 +166,11 @@ class Repl:
                 Repl._do_resume,
                 "/resume [<execution>]",
                 "continue a stopped run (bare: the most recent)",
+            ),
+            "answer": _Verb(
+                Repl._do_answer,
+                "/answer [<execution>]",
+                "answer a blocked run's questions, then '/resume'",
             ),
             "replay": _Verb(
                 Repl._do_replay,
@@ -696,6 +702,112 @@ class Repl:
 
         self._launch(f"resume-{wanted}", do_resume)
         return True
+
+    def _do_answer(self, args: list[str]) -> bool:
+        if self._active_run is not None and self._active_run.is_alive():
+            self._write("a run is in progress -- wait for it, then answer.")
+            return True
+        flows = self._flows_dir()
+        if flows is None:
+            return True
+        store = self._open_store()
+        if store is None:
+            return True
+        try:
+            # which run? an explicit execution, else the most recent with pending ones
+            if args:
+                row = store.execution(args[0]) or self._find_execution_prefix(store, args[0])
+                if row is None:
+                    self._write(f"no execution '{args[0]}'. try '/replay' to list them.")
+                    return True
+                target = row["execution_id"]
+            else:
+                target = next(
+                    (
+                        e["execution_id"]
+                        for e in reversed(store.executions())
+                        if any(
+                            q["status"] == "pending"
+                            for q in store.gate_questions(e["execution_id"])
+                        )
+                    ),
+                    None,
+                )
+                if target is None:
+                    self._write("no questions are awaiting an answer.")
+                    return True
+            pending = [q for q in store.gate_questions(target) if q["status"] == "pending"]
+            if not pending:
+                self._write("no questions are awaiting an answer on that run.")
+                return True
+            # walk them one at a time at the prompt, like the launch interview
+            answered = 0
+            for q in pending:
+                tag = "" if q["blocking"] else " (optional -- blank to skip)"
+                reply = self._read(f"  {q['text']}{tag}: ")
+                if reply is None:
+                    self._write("cancelled -- nothing recorded for the rest.")
+                    return True
+                reply = reply.strip()
+                if not reply and not q["blocking"]:
+                    store.emit(
+                        eventtypes.AnswerSubmitted(
+                            question_id=q["question_id"], answer=None, status="skipped"
+                        ),
+                        execution_id=target,
+                        actor="user",
+                    )
+                else:
+                    store.emit(
+                        eventtypes.AnswerSubmitted(
+                            question_id=q["question_id"], answer=reply, status="answered"
+                        ),
+                        execution_id=target,
+                        actor="user",
+                    )
+                    answered += 1
+            self._sweep_questions(store, flows, target)
+            self._write(f"recorded {answered} answer(s). '/resume' to continue the run.")
+            return True
+        finally:
+            store.close()
+
+    def _sweep_questions(self, store, flows, execution_id) -> None:
+        """Delete the transport questions courier file(s) for this run -- the gate
+        lifted them into events; the file is ephemeral. Best-effort housekeeping:
+        correctness doesn't depend on it (resume skips the completed gate step), so a
+        missing file or path is ignored."""
+        exec_row = store.execution(execution_id)
+        if exec_row is None:
+            return
+        workflow = next(
+            (
+                d.workflow
+                for d in discovery.discover_workflows(flows)
+                if d.workflow and d.name == exec_row["workflow_name"]
+            ),
+            None,
+        )
+        if workflow is None:
+            return
+        steps_by_id = {s.id: s for s in workflow.steps}
+        asked_steps = {q["step_name"] for q in store.gate_questions(execution_id)}
+        for step_name in asked_steps:
+            step = steps_by_id.get(step_name)
+            qout = step.questions_output() if step else None
+            if qout is None:
+                continue
+            courier = (
+                self.settings.workspace_dir
+                / "executions"
+                / execution_id
+                / step_name
+                / qout.filename
+            )
+            try:
+                courier.unlink()
+            except OSError:
+                pass
 
     def _run_progress_reporter(self) -> Callable[["orchestrator.RunProgress"], None]:
         """Render the engine's advancement notifications onto the prompt as they
