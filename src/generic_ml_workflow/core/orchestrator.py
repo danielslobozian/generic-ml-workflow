@@ -55,6 +55,17 @@ class OrchestratorError(Exception):
     """The execution could not proceed (unrunnable definition, unmet requirement)."""
 
 
+class RunMode(Enum):
+    """How a run advances, chosen at launch and recorded in the run's start event so
+    a ``/resume`` continues in the same mode and it survives a restart (DESIGN §7).
+    ``FULL_AUTO`` walks straight through; ``FULL_MANUAL`` checkpoints after every
+    step -- the run pauses (stop-and-resume) so it can be inspected, and ``/resume``
+    advances one step. (``questions-only`` is a later slice.)"""
+
+    FULL_AUTO = "full-auto"
+    FULL_MANUAL = "full-manual"
+
+
 class RunPhase(Enum):
     """The advancement boundaries the engine announces as a run walks its steps.
     These are *progress notifications* -- a side channel for a surface's live
@@ -68,6 +79,7 @@ class RunPhase(Enum):
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
     RUN_STOPPED = "run_stopped"
+    RUN_PAUSED = "run_paused"  # full-manual checkpoint after a step; awaits /resume
 
 
 @dataclass(frozen=True)
@@ -102,6 +114,7 @@ class RunReport:
     steps_run: list[str] = field(default_factory=list)
     stopped_reason: str | None = None  # why a run stopped early (e.g. an ML step)
     failed_step: str | None = None
+    paused_after: str | None = None  # full-manual checkpoint: the step we paused after
 
 
 @dataclass
@@ -172,6 +185,7 @@ class Orchestrator:
         credentials: set[str] | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
+        mode: RunMode = RunMode.FULL_AUTO,
         progress: ProgressReporter = _ignore_progress,
         stop: StopControl | None = None,
     ) -> RunReport:
@@ -194,6 +208,7 @@ class Orchestrator:
                 branch=stamp.branch,
                 engine_version=stamp.engine_version,
                 job_id=job_id,
+                mode=mode.value,
             ),
             execution_id=execution_id,
         )
@@ -215,6 +230,7 @@ class Orchestrator:
             completed=set(),
             tier_overrides=tier_overrides,
             shot_config=shot_config,
+            mode=mode,
             progress=progress,
             stop=stop,
         )
@@ -228,13 +244,16 @@ class Orchestrator:
         completed,
         tier_overrides,
         shot_config,
+        mode,
         progress,
         stop,
     ) -> RunReport:
         """Walk the steps once -- shared by a fresh ``run`` (empty context, nothing
         completed) and a ``resume`` (context rebuilt from the log, prior steps in
-        ``completed`` and skipped). Emits the terminal event (completed / failed /
-        stopped) and the matching progress, then returns the report."""
+        ``completed`` and skipped). In ``FULL_MANUAL`` it pauses after each step that
+        has an unfinished step behind it (a checkpoint -- stop-and-resume). Emits the
+        terminal event (completed / failed / stopped) and the matching progress, then
+        returns the report."""
         report = RunReport(execution_id=execution_id, completed=False)
         bindings = self._binding_map(workflow)
         tier_overrides = tier_overrides or {}
@@ -250,6 +269,22 @@ class Orchestrator:
             )
             progress(
                 RunProgress(RunPhase.RUN_STOPPED, execution_id, step_name=step_name, reason=reason)
+            )
+            return report
+
+        def record_checkpoint(step_name: str) -> RunReport:
+            # full-manual pause: a checkpoint awaiting /resume. Recorded as a stopped
+            # event (resumable) with a checkpoint reason; rendered as a pause, not a
+            # stop. The run's mode is in its start event, so the resume keeps stepping.
+            reason = f"checkpoint after '{step_name}' (full-manual)"
+            report.paused_after = step_name
+            report.stopped_reason = reason
+            self._store.emit(
+                et.WorkflowExecutionStopped(reason=reason, step_name=step_name),
+                execution_id=execution_id,
+            )
+            progress(
+                RunProgress(RunPhase.RUN_PAUSED, execution_id, step_name=step_name, reason=reason)
             )
             return report
 
@@ -323,6 +358,11 @@ class Orchestrator:
                 )
             )
 
+            if mode is RunMode.FULL_MANUAL:
+                # checkpoint, unless this was the last unfinished step (then complete)
+                remaining = [s for s in workflow.steps[step_number:] if s.id not in completed]
+                if remaining:
+                    return record_checkpoint(step.id)
         self._store.emit(et.WorkflowExecutionCompleted(), execution_id=execution_id)
         report.completed = True
         progress(RunProgress(RunPhase.RUN_COMPLETED, execution_id, step_count=step_count))
@@ -335,6 +375,7 @@ class Orchestrator:
         *,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
+        mode: RunMode | None = None,
         progress: ProgressReporter = _ignore_progress,
         stop: StopControl | None = None,
     ) -> RunReport:
@@ -342,9 +383,11 @@ class Orchestrator:
         the set of completed steps from the run's own events (the log is the
         authority; DESIGN §11), marks it running again, and walks the unfinished
         steps on the same execution id. An interrupted step (started, never
-        completed) simply runs again -- the step is the unit of resume. Uses the
-        currently-loaded workflow/config, not the originally-stamped commit (strict
-        same-commit resume is the 0.1.5 time-travel slice)."""
+        completed) simply runs again -- the step is the unit of resume. Continues in
+        the run's recorded mode (so a full-manual run keeps checkpointing) unless an
+        explicit ``mode`` overrides it. Uses the currently-loaded workflow/config, not
+        the originally-stamped commit (strict same-commit resume is the 0.1.5
+        time-travel slice)."""
         row = self._store.execution(execution_id)
         if row is None:
             raise OrchestratorError(f"no execution '{execution_id}' to resume")
@@ -358,7 +401,7 @@ class Orchestrator:
                 "workflow does not validate; fix these before resuming:\n  "
                 + "\n  ".join(result.errors)
             )
-        context, completed = self._rebuild(execution_id)
+        context, completed, recorded_mode = self._rebuild(execution_id)
         first_unfinished = next((s.id for s in workflow.steps if s.id not in completed), None)
         self._store.emit(
             et.WorkflowExecutionResumed(from_step=first_unfinished),
@@ -371,24 +414,28 @@ class Orchestrator:
             completed=completed,
             tier_overrides=tier_overrides or {},
             shot_config=shot_config,
+            mode=mode or recorded_mode,
             progress=progress,
             stop=stop,
         )
 
-    def _rebuild(self, execution_id: str) -> tuple[dict[str, object], set[str]]:
-        """Rebuild the context-fold (run-inputs + artifact pointers) and the set of
-        completed step names from an execution's recorded events -- a read-model, not
-        a re-execution (DESIGN §11)."""
+    def _rebuild(self, execution_id: str) -> tuple[dict[str, object], set[str], RunMode]:
+        """Rebuild the context-fold (run-inputs + artifact pointers), the set of
+        completed step names, and the run's recorded mode from its own events -- a
+        read-model, not a re-execution (DESIGN §11)."""
         context: dict[str, object] = {}
         completed: set[str] = set()
+        mode = RunMode.FULL_AUTO
         for event in self._store.replay(execution_id):
-            if event.event_type is et.EventType.RUN_INPUT_PROVIDED:
+            if event.event_type is et.EventType.WORKFLOW_EXECUTION_STARTED:
+                mode = RunMode(getattr(event.payload, "mode", RunMode.FULL_AUTO.value))
+            elif event.event_type is et.EventType.RUN_INPUT_PROVIDED:
                 context[event.payload.name] = event.payload.value
             elif event.event_type is et.EventType.ARTIFACT_CREATED:
                 context[event.payload.name] = Path(event.payload.path)
             elif event.event_type is et.EventType.STEP_COMPLETED:
                 completed.add(event.payload.step_name)
-        return context, completed
+        return context, completed, mode
 
     def _run_step(self, step, execution_id, context, bindings, report, stop=None) -> bool:
         self._store.emit(

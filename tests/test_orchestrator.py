@@ -26,6 +26,7 @@ from generic_ml_workflow.core.events import EventStore
 from generic_ml_workflow.core.orchestrator import (
     Orchestrator,
     OrchestratorError,
+    RunMode,
     RunPhase,
     RunProgress,
     warm_up,
@@ -599,3 +600,85 @@ def test_resume_unknown_execution_is_loud(tmp_path):
     wf = _demo_workflow(tmp_path)
     with pytest.raises(OrchestratorError, match="no execution"):
         Orchestrator(store, tmp_path / "ws").resume("does-not-exist", wf)
+
+
+# --- 0.0.8: run modes -- full-auto (straight through) vs full-manual (checkpoint) -
+
+
+def _three_step_workflow(scripts: Path) -> Workflow:
+    """alpha -> beta -> gamma, each copying its input forward, so a value seeded at
+    launch is carried the whole chain. Three steps so full-manual pauses twice."""
+    (scripts / "s1.sh").write_text("cat seed > a.txt\n", encoding="utf-8")
+    (scripts / "s2.sh").write_text("cat a_in > b.txt\n", encoding="utf-8")
+    (scripts / "s3.sh").write_text("cat b_in > c.txt\n", encoding="utf-8")
+    alpha = StepSpec(
+        id="alpha",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(scripts / "s1.sh"),
+        inputs=(InputPort("seed", Requirement.RUN_INPUT),),
+        outputs=(_out("a", "a.txt"),),
+    )
+    beta = StepSpec(
+        id="beta",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(scripts / "s2.sh"),
+        inputs=(InputPort("a_in", Requirement.ARTIFACT),),
+        outputs=(_out("b", "b.txt"),),
+    )
+    gamma = StepSpec(
+        id="gamma",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(scripts / "s3.sh"),
+        inputs=(InputPort("b_in", Requirement.ARTIFACT),),
+        outputs=(_out("c", "c.txt"),),
+    )
+    return Workflow(
+        name="three",
+        input_type=InputType.FREESTYLE,
+        steps=(alpha, beta, gamma),
+        bindings=(Binding("beta", "a_in", "a"), Binding("gamma", "b_in", "b")),
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_full_auto_runs_straight_through(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {"url": "x"}, STAMP)  # default
+    assert report.completed
+    assert report.paused_after is None
+    assert report.steps_run == ["fetch", "extract"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_full_manual_checkpoints_each_step_and_resume_keeps_the_mode(tmp_path):
+    store = EventStore(":memory:")
+    wf = _three_step_workflow(tmp_path)
+    orch = Orchestrator(store, tmp_path / "ws")
+
+    # launch full-manual: runs alpha, then pauses (a checkpoint), nothing else yet
+    first = orch.run(wf, {"seed": "hello"}, STAMP, mode=RunMode.FULL_MANUAL)
+    assert not first.completed
+    assert first.paused_after == "alpha"
+    assert first.steps_run == ["alpha"]
+    assert store.execution(first.execution_id)["status"] == "stopped"
+
+    # resume WITHOUT passing a mode: it reads the recorded full-manual from the log
+    # and pauses again after the next step
+    second = orch.resume(first.execution_id, wf)
+    assert not second.completed
+    assert second.paused_after == "beta"
+    assert second.steps_run == ["beta"]
+
+    # resume once more: gamma is the last step, so the run completes (no pause)
+    third = orch.resume(first.execution_id, wf)
+    assert third.completed
+    assert third.steps_run == ["gamma"]
+    assert store.execution(first.execution_id)["status"] == "completed"
+
+    # the seed was carried alpha -> beta -> gamma through the rebuilt context each time
+    artifacts = [
+        e for e in store.replay(first.execution_id) if e.event_type is et.EventType.ARTIFACT_CREATED
+    ]
+    final = next(e for e in artifacts if e.payload.name == "c")
+    assert Path(final.payload.path).read_text().strip() == "hello"

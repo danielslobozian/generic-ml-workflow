@@ -804,3 +804,22 @@ def test_resume_with_nothing_to_resume_says_so(tmp_path):
 def test_resume_unknown_execution_says_so(tmp_path):
     out, _ = drive_at(["/resume ghost", "/quit"], PRESENT, _cfg_at(tmp_path))
     assert "no execution 'ghost'" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_run_full_manual_pauses_then_resume_completes(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    out, _ = drive_at(["/run demo --manual", "hello world", "/resume", "/quit"], PRESENT, cfg)
+    assert "in full-manual" in out  # the launch announced the mode
+    assert "\u2713 fetch" in out  # first step ran
+    assert "paused after 'fetch'" in out  # then a checkpoint, awaiting /resume
+    assert "resuming 'demo'" in out  # /resume picked it back up
+    assert "\u2713 extract" in out and "completed" in out  # finished the rest
+
+
+def test_run_rejects_unknown_option(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    out, _ = drive_at(["/run demo --bogus", "/quit"], PRESENT, cfg)
+    assert "unknown option(s): --bogus" in out

@@ -493,8 +493,23 @@ class Repl:
             for e in result.errors:
                 self._write(f"  \u2717 {e}")
             return True
+        # run mode flag: `--manual` (checkpoint after every step) | `--auto` (default,
+        # straight through). Flags start with `--`; overrides are `<step>=<tier>`.
+        rest = args[1:]
+        flags = {t for t in rest if t.startswith("--")}
+        unknown = flags - {"--manual", "--auto"}
+        if unknown:
+            self._write(f"unknown option(s): {', '.join(sorted(unknown))}. try '/help'.")
+            return True
+        mode = (
+            orchestrator.RunMode.FULL_MANUAL
+            if "--manual" in flags
+            else orchestrator.RunMode.FULL_AUTO
+        )
         # optional per-step tier overrides: `/run <flow> <step>=<tier> ...`
-        overrides = self._parse_tier_overrides(workflow, args[1:])
+        overrides = self._parse_tier_overrides(
+            workflow, [t for t in rest if not t.startswith("--")]
+        )
         if overrides is None:
             return True  # a bad override was reported; don't run with it
         # the computed interview: ask for the union of unsatisfied run-inputs
@@ -505,7 +520,7 @@ class Repl:
                 self._write("cancelled.")
                 return True
             run_inputs[name] = answer.strip()
-        self._execute_run(workflow, run_inputs, flows, overrides)
+        self._execute_run(workflow, run_inputs, flows, overrides, mode)
         return True
 
     def _do_stop(self, args: list[str]) -> bool:
@@ -558,7 +573,8 @@ class Repl:
             overrides[step_id] = tier
         return overrides
 
-    def _execute_run(self, workflow, run_inputs, flows, overrides=None) -> None:
+    def _execute_run(self, workflow, run_inputs, flows, overrides=None, mode=None) -> None:
+        mode = mode or orchestrator.RunMode.FULL_AUTO
         st = stamp.read_stamp(flows)
         if not st.versioned:
             self._write("  (flows folder is unversioned -- recording the run as such)")
@@ -567,13 +583,18 @@ class Repl:
             for step_id, tier in overrides.items():
                 self._write(f"  tier override: {step_id} -> {tier.value}")
         step_count = len(workflow.steps)
+        manual_note = (
+            " in full-manual -- it pauses after each step ('/resume' to advance)"
+            if mode is orchestrator.RunMode.FULL_MANUAL
+            else ""
+        )
         if self._rich_input:
             self._write(
-                f"running '{workflow.name}' in the background ({step_count} steps); "
+                f"running '{workflow.name}' in the background ({step_count} steps){manual_note}; "
                 "progress appears as it advances, the prompt stays free."
             )
         else:
-            self._write(f"running '{workflow.name}' ({step_count} steps)...")
+            self._write(f"running '{workflow.name}' ({step_count} steps){manual_note}...")
 
         def do_run(orch, progress, stop) -> None:
             orch.run(
@@ -582,6 +603,7 @@ class Repl:
                 st,
                 shot_config=shot_config,
                 tier_overrides=overrides,
+                mode=mode,
                 progress=progress,
                 stop=stop,
             )
@@ -700,6 +722,12 @@ class Repl:
                 eid = progress.execution_id[:12]
                 where = f" during '{progress.step_name}'" if progress.step_name else ""
                 self._write(f"stopped{where}. execution {eid} can be resumed later.")
+            elif progress.phase is phase.RUN_PAUSED:
+                eid = progress.execution_id[:12]
+                self._write(
+                    f"paused after '{progress.step_name}' (full-manual). "
+                    f"'/resume' to advance, or '/replay {eid}' to inspect."
+                )
             # RUN_STARTED needs no line -- the launch message already announced it.
 
         return report

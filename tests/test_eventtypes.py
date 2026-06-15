@@ -31,7 +31,15 @@ def test_stamp_payload_carries_references_not_objects():
     d = s.to_json()
     assert d["workflow_name"] == "feature" and d["commit"] == "abc123"
     # no embedded definition object -- references and scalars only
-    assert set(d) <= {"workflow_name", "input_type", "commit", "branch", "engine_version", "job_id"}
+    assert set(d) <= {
+        "workflow_name",
+        "input_type",
+        "commit",
+        "branch",
+        "engine_version",
+        "job_id",
+        "mode",
+    }
 
 
 def test_parse_rejects_unknown_field():

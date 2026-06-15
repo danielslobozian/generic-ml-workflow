@@ -41,6 +41,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   step-walk (`run` is "resume from an empty context"). Resume uses the
   currently-loaded workflow and config, not the originally-stamped commit
   (same-commit time travel is a later slice).
+- **Run modes — full-auto and full-manual.** A run's mode is chosen at launch and
+  recorded in its start event (so a `/resume` continues in the same mode and it
+  survives a restart). `full-auto` (the default) walks straight through;
+  `full-manual` (`/run <wf> --manual`) checkpoints after every step — the run pauses
+  (stop-and-resume), the prompt comes back, and `/resume` advances one step before
+  pausing again. A checkpoint is a resumable pause (rendered as "paused after
+  '<step>'", distinct from a stop or a failure); after the last step the run simply
+  completes. (`questions-only`, the third mode, is the next slice.)
 
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7

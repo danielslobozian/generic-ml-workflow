@@ -95,6 +95,7 @@ class WorkflowExecutionStarted(Payload):
     branch: str | None
     engine_version: str
     job_id: str | None = None
+    mode: str = "full-auto"  # run mode at launch: full-auto | full-manual (DESIGN §7)
 
 
 @dataclass(frozen=True)
