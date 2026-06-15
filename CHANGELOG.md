@@ -49,6 +49,16 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   pausing again. A checkpoint is a resumable pause (rendered as "paused after
   '<step>'", distinct from a stop or a failure); after the last step the run simply
   completes. (`questions-only`, the third mode, is the next slice.)
+- **Questions gate — it fires and blocks (`questions-only` mode).** A step asks by
+  producing its declared `questions` output (a transport courier, kind `questions`);
+  when it does, the engine reads the structured set (`{id, text, blocking}`), records
+  a `questions.asked` event, and **blocks** the run awaiting answers — a resumable
+  pause, with the questions shown at the prompt. `full-auto` (and a per-step
+  `unattended`) sails past untouched (invariant 10); `questions-only` (`/run <wf>
+  --questions`) honors it. The gate's own read-model arrives as planned: a new
+  `gate_questions` projection table, one row per question per run (pending →
+  answered/skipped), projected from the gate events like the other read-models.
+  Answering the questions and feeding them back into the run is the next slice.
 
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7

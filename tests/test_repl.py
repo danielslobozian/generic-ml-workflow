@@ -823,3 +823,39 @@ def test_run_rejects_unknown_option(tmp_path):
     _write_demo(flows)
     out, _ = drive_at(["/run demo --bogus", "/quit"], PRESENT, cfg)
     assert "unknown option(s): --bogus" in out
+
+
+def _write_gate(flows):
+    import subprocess as sp
+
+    (flows / "ask.sh").write_text(
+        'printf \'%s\' \'[{"id":"tone","text":"Formal or casual?","blocking":true}]\' > q.json\n',
+        encoding="utf-8",
+    )
+    (flows / "gate.yaml").write_text(
+        "name: gate\ninput_type: freestyle\nsteps:\n"
+        f"  - id: ask\n    nature: executable\n    entrypoint: {flows / 'ask.sh'}\n"
+        "    outputs:\n"
+        "      - {name: questions, lifespan: transport, kind: questions, filename: q.json}\n",
+        encoding="utf-8",
+    )
+    sp.run(["git", "-C", str(flows), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(flows), "commit", "-qm", "gate"], check=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_run_questions_only_blocks_when_a_step_asks(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_gate(flows)
+    out, _ = drive_at(["/run gate --questions", "/quit"], PRESENT, cfg)
+    assert "in questions-only" in out  # the launch announced the mode
+    assert "is asking" in out  # the gate fired
+    assert "Formal or casual?" in out  # the question is shown at the prompt
+    assert "resumable" in out
+
+
+def test_run_rejects_conflicting_modes(tmp_path):
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    out, _ = drive_at(["/run demo --manual --questions", "/quit"], PRESENT, cfg)
+    assert "different run modes" in out

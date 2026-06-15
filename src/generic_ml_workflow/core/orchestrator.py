@@ -31,6 +31,7 @@ Validation is the gate before any work: a workflow that does not pass
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -38,6 +39,7 @@ from pathlib import Path
 
 from generic_ml_workflow.core import runner, shotrunner
 from generic_ml_workflow.core.contract import (
+    OutputKind,
     Requirement,
     StepNature,
     StepSpec,
@@ -60,10 +62,12 @@ class RunMode(Enum):
     a ``/resume`` continues in the same mode and it survives a restart (DESIGN §7).
     ``FULL_AUTO`` walks straight through; ``FULL_MANUAL`` checkpoints after every
     step -- the run pauses (stop-and-resume) so it can be inspected, and ``/resume``
-    advances one step. (``questions-only`` is a later slice.)"""
+    advances one step. ``QUESTIONS_ONLY`` runs straight through but blocks whenever a
+    step asks (produces its ``questions`` output), awaiting answers."""
 
     FULL_AUTO = "full-auto"
     FULL_MANUAL = "full-manual"
+    QUESTIONS_ONLY = "questions-only"
 
 
 class RunPhase(Enum):
@@ -80,6 +84,7 @@ class RunPhase(Enum):
     RUN_FAILED = "run_failed"
     RUN_STOPPED = "run_stopped"
     RUN_PAUSED = "run_paused"  # full-manual checkpoint after a step; awaits /resume
+    RUN_BLOCKED = "run_blocked"  # questions gate: a step asked; awaits answers
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,7 @@ class RunProgress:
     step_number: int | None = None
     step_count: int | None = None
     reason: str | None = None
+    questions: tuple = ()  # the gate's questions, carried on RUN_BLOCKED
 
 
 # A surface supplies this to receive live advancement; the engine calls it at each
@@ -115,6 +121,8 @@ class RunReport:
     stopped_reason: str | None = None  # why a run stopped early (e.g. an ML step)
     failed_step: str | None = None
     paused_after: str | None = None  # full-manual checkpoint: the step we paused after
+    awaiting: tuple = ()  # questions gate: the questions the run is blocked on
+    awaiting_file: Path | None = None  # internal: the produced questions file (to parse/sweep)
 
 
 @dataclass
@@ -358,6 +366,49 @@ class Orchestrator:
                 )
             )
 
+            # the questions gate: did this step ask? (produce its `questions` output)
+            if report.awaiting_file is not None:
+                questions_file = report.awaiting_file
+                report.awaiting_file = None
+                gate_honored = mode is not RunMode.FULL_AUTO and not step.unattended
+                if gate_honored:
+                    try:
+                        questions = self._read_questions(questions_file)
+                    except OrchestratorError as exc:
+                        self._store.emit(
+                            et.WorkflowExecutionFailed(reason=str(exc)), execution_id=execution_id
+                        )
+                        report.failed_step = step.id
+                        progress(RunProgress(RunPhase.RUN_FAILED, execution_id, reason=str(exc)))
+                        return report
+                    report.awaiting = questions
+                    self._store.emit(
+                        et.QuestionsAsked(step_name=step.id, questions=questions),
+                        execution_id=execution_id,
+                        step_name=step.id,
+                    )
+                    # a gate block is a resumable pause: record the halt so the run
+                    # leaves 'running' (status -> stopped, resumable), distinct from a
+                    # failure. Why it halted is in the questions.asked event + the rows.
+                    report.stopped_reason = f"awaiting answers to {len(questions)} question(s)"
+                    self._store.emit(
+                        et.WorkflowExecutionStopped(
+                            reason=report.stopped_reason, step_name=step.id
+                        ),
+                        execution_id=execution_id,
+                    )
+                    progress(
+                        RunProgress(
+                            RunPhase.RUN_BLOCKED,
+                            execution_id,
+                            step_name=step.id,
+                            reason=f"{len(questions)} question(s) await answers",
+                            questions=questions,
+                        )
+                    )
+                    return report
+                # full-auto / unattended: the gate is bypassed -- proceed as if unasked
+
             if mode is RunMode.FULL_MANUAL:
                 # checkpoint, unless this was the last unfinished step (then complete)
                 remaining = [s for s in workflow.steps[step_number:] if s.id not in completed]
@@ -437,6 +488,33 @@ class Orchestrator:
                 completed.add(event.payload.step_name)
         return context, completed, mode
 
+    @staticmethod
+    def _read_questions(path: Path) -> tuple[dict, ...]:
+        """Parse a step's `questions` output into the structured set the gate records:
+        a JSON list of ``{id?, text, blocking?}``. Fails loudly on a malformed file --
+        a gate the engine can't read is an authoring error, not something to paper
+        over. ``id`` defaults to a positional ``q1``/``q2``…; ``blocking`` to true."""
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OrchestratorError(f"questions file '{path}' is not valid JSON: {exc}") from exc
+        if not isinstance(raw, list) or not raw:
+            raise OrchestratorError(f"questions file '{path}' must be a non-empty JSON list")
+        questions: list[dict] = []
+        for index, item in enumerate(raw, start=1):
+            if not isinstance(item, dict) or "text" not in item:
+                raise OrchestratorError(
+                    f"questions file '{path}': item {index} needs at least a 'text' field"
+                )
+            questions.append(
+                {
+                    "id": str(item.get("id", f"q{index}")),
+                    "text": str(item["text"]),
+                    "blocking": bool(item.get("blocking", True)),
+                }
+            )
+        return tuple(questions)
+
     def _run_step(self, step, execution_id, context, bindings, report, stop=None) -> bool:
         self._store.emit(
             et.StepStarted(step_name=step.id), execution_id=execution_id, step_name=step.id
@@ -465,7 +543,11 @@ class Orchestrator:
         # collect durable products into the context + emit pointers
         for produced in result.outputs:
             out_spec = next(o for o in step.outputs if o.name == produced.name)
-            if out_spec.lifespan.value == "durable":
+            if out_spec.kind is OutputKind.QUESTIONS:
+                # a courier, not a keepsake: the gate reads it (parsed in _walk), it
+                # is not added to the context nor recorded as an artifact pointer.
+                report.awaiting_file = produced.path
+            elif out_spec.lifespan.value == "durable":
                 self._store.emit(
                     et.ArtifactCreated(
                         name=produced.name,
@@ -574,7 +656,9 @@ class Orchestrator:
             return False
         for produced in result.outputs:
             out_spec = next(o for o in step.outputs if o.name == produced.name)
-            if out_spec.lifespan.value == "durable":
+            if out_spec.kind is OutputKind.QUESTIONS:
+                report.awaiting_file = produced.path
+            elif out_spec.lifespan.value == "durable":
                 self._store.emit(
                     et.ArtifactCreated(
                         name=produced.name, path=str(produced.path), sha256=produced.sha256

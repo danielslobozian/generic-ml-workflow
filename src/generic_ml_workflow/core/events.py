@@ -96,6 +96,21 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
     created_at     TEXT,
     updated_at     TEXT
 );
+-- projection: the gate read-model -- one row per question per run, the queryable
+-- "what's asked / answered / still pending" state, rebuilt from questions.asked
+-- (inserts pending rows) and answer.submitted (updates a row to answered/skipped).
+CREATE TABLE IF NOT EXISTS gate_questions (
+    execution_id  TEXT NOT NULL,
+    step_name     TEXT,                                -- the step that asked
+    question_id   TEXT NOT NULL,
+    text          TEXT,
+    blocking      INTEGER,                             -- 1 = must be answered to proceed
+    status        TEXT,                                -- pending | answered | skipped
+    answer        TEXT,
+    asked_at      TEXT,
+    answered_at   TEXT,
+    PRIMARY KEY (execution_id, question_id)
+);
 """
 
 
@@ -218,8 +233,47 @@ class EventStore:
                 "UPDATE workflow_executions SET status='running',updated_at=? WHERE execution_id=?",
                 (e.occurred_at, e.execution_id),
             )
+        elif e.event_type is EventType.QUESTIONS_ASKED:
+            for q in e.payload.questions:
+                c.execute(
+                    "INSERT INTO gate_questions(execution_id,step_name,question_id,text,"
+                    "blocking,status,answer,asked_at,answered_at) "
+                    "VALUES(?,?,?,?,?,'pending',NULL,?,NULL) "
+                    "ON CONFLICT(execution_id,question_id) DO UPDATE SET "
+                    "text=excluded.text,blocking=excluded.blocking,status='pending',"
+                    "answer=NULL,asked_at=excluded.asked_at,answered_at=NULL",
+                    (
+                        e.execution_id,
+                        e.step_name,
+                        q["id"],
+                        q["text"],
+                        1 if q.get("blocking", True) else 0,
+                        e.occurred_at,
+                    ),
+                )
 
     # --- reads ---
+    def gate_questions(self, execution_id: str) -> list[dict]:
+        """The gate read-model for one run: every question with its current status
+        (pending / answered / skipped). The surface reads it to know what to ask;
+        resume reads it to know whether the gate is satisfied."""
+        rows = self._conn.execute(
+            "SELECT question_id,step_name,text,blocking,status,answer FROM gate_questions "
+            "WHERE execution_id=? ORDER BY rowid",
+            (execution_id,),
+        )
+        return [
+            {
+                "question_id": r[0],
+                "step_name": r[1],
+                "text": r[2],
+                "blocking": bool(r[3]),
+                "status": r[4],
+                "answer": r[5],
+            }
+            for r in rows
+        ]
+
     def replay(self, execution_id: str) -> list[Event]:
         """Every event of one run, in order -- the basis of /replay and of the
         deterministic fold that rebuilds in-memory state."""

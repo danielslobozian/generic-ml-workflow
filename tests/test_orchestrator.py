@@ -682,3 +682,62 @@ def test_full_manual_checkpoints_each_step_and_resume_keeps_the_mode(tmp_path):
     ]
     final = next(e for e in artifacts if e.payload.name == "c")
     assert Path(final.payload.path).read_text().strip() == "hello"
+
+
+# --- 0.0.8 (3a): the questions gate -- fire & block in questions-only, bypass auto -
+
+
+def _gate_workflow(scripts: Path) -> Workflow:
+    """A single step that asks: it writes a structured questions set to its
+    `questions` output (a transport courier), which drives the gate."""
+    ask_sh = scripts / "ask.sh"
+    ask_sh.write_text(
+        'printf \'%s\' \'[{"id":"tone","text":"Formal or casual?","blocking":true}]\' > q.json\n',
+        encoding="utf-8",
+    )
+    ask = StepSpec(
+        id="ask",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(ask_sh),
+        outputs=(
+            OutputPort(
+                name="questions",
+                lifespan=Lifespan.TRANSPORT,
+                kind=OutputKind.QUESTIONS,
+                filename="q.json",
+            ),
+        ),
+    )
+    return Workflow(name="gate", input_type=InputType.FREESTYLE, steps=(ask,))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_questions_gate_fires_and_blocks_in_questions_only(tmp_path):
+    store = EventStore(":memory:")
+    wf = _gate_workflow(tmp_path)
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP, mode=RunMode.QUESTIONS_ONLY)
+    assert not report.completed  # blocked, awaiting answers
+    assert len(report.awaiting) == 1
+    assert report.awaiting[0]["text"] == "Formal or casual?"
+    assert store.execution(report.execution_id)["status"] == "stopped"
+
+    types = [e.event_type for e in store.replay(report.execution_id)]
+    assert et.EventType.QUESTIONS_ASKED in types  # the asking was recorded
+
+    rows = store.gate_questions(report.execution_id)  # the gate read-model
+    assert len(rows) == 1
+    assert rows[0]["question_id"] == "tone"
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["blocking"] is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_questions_gate_is_bypassed_in_full_auto(tmp_path):
+    store = EventStore(":memory:")
+    wf = _gate_workflow(tmp_path)
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP)  # full-auto default
+    assert report.completed  # sailed past the gate
+    assert report.awaiting == ()
+    types = [e.event_type for e in store.replay(report.execution_id)]
+    assert et.EventType.QUESTIONS_ASKED not in types  # nothing asked
+    assert store.gate_questions(report.execution_id) == []  # no gate rows

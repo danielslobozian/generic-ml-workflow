@@ -493,19 +493,23 @@ class Repl:
             for e in result.errors:
                 self._write(f"  \u2717 {e}")
             return True
-        # run mode flag: `--manual` (checkpoint after every step) | `--auto` (default,
-        # straight through). Flags start with `--`; overrides are `<step>=<tier>`.
+        # run mode flag: `--manual` (checkpoint after every step) | `--questions`
+        # (block only when a step asks) | `--auto` (default, straight through).
         rest = args[1:]
         flags = {t for t in rest if t.startswith("--")}
-        unknown = flags - {"--manual", "--auto"}
+        unknown = flags - {"--manual", "--auto", "--questions"}
         if unknown:
             self._write(f"unknown option(s): {', '.join(sorted(unknown))}. try '/help'.")
             return True
-        mode = (
-            orchestrator.RunMode.FULL_MANUAL
-            if "--manual" in flags
-            else orchestrator.RunMode.FULL_AUTO
-        )
+        if "--manual" in flags and "--questions" in flags:
+            self._write("--manual and --questions are different run modes; pick one.")
+            return True
+        if "--manual" in flags:
+            mode = orchestrator.RunMode.FULL_MANUAL
+        elif "--questions" in flags:
+            mode = orchestrator.RunMode.QUESTIONS_ONLY
+        else:
+            mode = orchestrator.RunMode.FULL_AUTO
         # optional per-step tier overrides: `/run <flow> <step>=<tier> ...`
         overrides = self._parse_tier_overrides(
             workflow, [t for t in rest if not t.startswith("--")]
@@ -583,18 +587,19 @@ class Repl:
             for step_id, tier in overrides.items():
                 self._write(f"  tier override: {step_id} -> {tier.value}")
         step_count = len(workflow.steps)
-        manual_note = (
-            " in full-manual -- it pauses after each step ('/resume' to advance)"
-            if mode is orchestrator.RunMode.FULL_MANUAL
-            else ""
-        )
+        if mode is orchestrator.RunMode.FULL_MANUAL:
+            mode_note = " in full-manual -- it pauses after each step ('/resume' to advance)"
+        elif mode is orchestrator.RunMode.QUESTIONS_ONLY:
+            mode_note = " in questions-only -- it runs through, pausing only when a step asks"
+        else:
+            mode_note = ""
         if self._rich_input:
             self._write(
-                f"running '{workflow.name}' in the background ({step_count} steps){manual_note}; "
+                f"running '{workflow.name}' in the background ({step_count} steps){mode_note}; "
                 "progress appears as it advances, the prompt stays free."
             )
         else:
-            self._write(f"running '{workflow.name}' ({step_count} steps){manual_note}...")
+            self._write(f"running '{workflow.name}' ({step_count} steps){mode_note}...")
 
         def do_run(orch, progress, stop) -> None:
             orch.run(
@@ -728,6 +733,12 @@ class Repl:
                     f"paused after '{progress.step_name}' (full-manual). "
                     f"'/resume' to advance, or '/replay {eid}' to inspect."
                 )
+            elif progress.phase is phase.RUN_BLOCKED:
+                eid = progress.execution_id[:12]
+                self._write(f"  blocked -- '{progress.step_name}' is asking ({progress.reason}):")
+                for q in progress.questions:
+                    self._write(f"    \u2022 {q['text']}")
+                self._write(f"the run paused; execution {eid} is recorded and resumable.")
             # RUN_STARTED needs no line -- the launch message already announced it.
 
         return report
