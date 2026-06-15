@@ -59,6 +59,46 @@ noted inline.
 
 ---
 
+## Design notes — decided 2026-06-15
+
+The user / projection model, captured in DESIGN.md §16; the slice that builds
+each is noted inline.
+
+- **Rules are the user's projection onto a cap; caps are generic.** A cap ships as
+  a generic role carrying no user; a run becomes *yours* by rules accrued onto it,
+  never by mutating it — authored ships, accrued stays. "Digital me" is a bound
+  result, never authored or exported. (Foundation: caps v1, **0.1.0**; full model
+  in DESIGN §16.)
+- **Placement taxonomy resolved** (supersedes the old §15 open question): a
+  correction is a rule on a cap; a "user rule" is a rule on the user-cap; a
+  non-generalizing fix is a per-binding tweak (layered-config override), not a
+  rule. (DESIGN §15, §16.)
+- **Personal context is a snapshot, projected per cap.** Seed rules are extracted
+  from the snapshot at warm-up (one cached interpretive shot); the raw snapshot
+  never transits a model call. The snapshot is user-owned and app-immutable.
+  (Builds on context buckets, **0.1.1**; warm-up extension, **0.1.0–0.1.1**.)
+- **Warm-up cap personalization.** Per cap, warm-up offers generic / project-my-
+  context / play-it-myself; "play it myself" is the per-role face of the 0.0.8 run
+  modes. (**0.1.0–0.1.1**, after the 0.0.8 modes.)
+- **Export with a personal-flagging pass.** Exporting a locally-built workflow
+  ships the authored caps and their seed rules clean, strips bound personal
+  context, and marks accrued rules as probable-personal by default — the user's
+  call to keep or drop. (**0.1.2**, with `/export`.)
+- **Automatic rule proposal, by a per-step observer.** A short-lived observer
+  judges how a step went and proposes the rule; which observer fires (a playing
+  cap's vs the companion's) routes the result to professional vs personal. Enriches
+  the existing automatic-rule-proposal item. (Tuning loop **0.1.6+**; companion
+  side **0.3.x**.)
+- **Stale-rule detection on snapshot change.** Editing the context snapshot
+  surfaces the seed rules it touched, before/after, for the user to keep / revise /
+  drop — never silent. (Tuning loop, **0.1.6+**.)
+
+Open, not yet decided: a shared "professional-you" base beneath role-caps; the
+bucket boundaries inside personal context; whether elicitation is a cap nature or
+a companion sub-kind.
+
+---
+
 ## 0.0.x — the runtime, dumb and solid
 
 ### 0.0.1 — a home that opens
