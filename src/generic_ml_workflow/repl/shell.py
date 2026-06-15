@@ -161,6 +161,11 @@ class Repl:
                 "/stop",
                 "stop the run in progress (also: press Escape)",
             ),
+            "resume": _Verb(
+                Repl._do_resume,
+                "/resume [<execution>]",
+                "continue a stopped run (bare: the most recent)",
+            ),
             "replay": _Verb(
                 Repl._do_replay,
                 "/replay [<execution>]",
@@ -569,47 +574,101 @@ class Repl:
             )
         else:
             self._write(f"running '{workflow.name}' ({step_count} steps)...")
+
+        def do_run(orch, progress, stop) -> None:
+            orch.run(
+                workflow,
+                run_inputs,
+                st,
+                shot_config=shot_config,
+                tier_overrides=overrides,
+                progress=progress,
+                stop=stop,
+            )
+
+        self._launch(f"run-{workflow.name}", do_run)
+
+    def _launch(self, label: str, work) -> None:
+        """Run ``work(orch, progress, stop)`` on the background worker (real terminal)
+        or synchronously (scripted/CI). Owns the worker, the per-run stop control, and
+        the event store's whole lifetime -- a SQLite connection is thread-bound, so it
+        is opened, used, and closed inside the one worker, never crossing threads."""
         report_progress = self._run_progress_reporter()
         stop = stopping.StopControl()
         self._active_stop = stop
 
         def worker() -> None:
-            # The whole run -- including the event store's lifetime -- lives in this
-            # one thread: a SQLite connection is thread-bound, so it is opened, used,
-            # and closed here, never handed across the prompt/worker boundary. The
-            # engine stays synchronous and thread-unaware, announcing only through
-            # the reporter (DESIGN.md invariant 24).
             store = self._open_store()
             if store is None:
                 return
             orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
             try:
-                orch.run(
-                    workflow,
-                    run_inputs,
-                    st,
-                    shot_config=shot_config,
-                    tier_overrides=overrides,
-                    progress=report_progress,
-                    stop=stop,
-                )
+                work(orch, report_progress, stop)
             except orchestrator.OrchestratorError as exc:
                 self._write(f"  cannot run: {exc}")
             finally:
                 store.close()
 
         if self._rich_input:
-            # the real terminal: advance off the prompt thread so the prompt stays
-            # free; progress renders above it via patch_stdout.
-            thread = threading.Thread(
-                target=worker, name=f"gmlworkflow-run-{workflow.name}", daemon=True
-            )
+            thread = threading.Thread(target=worker, name=f"gmlworkflow-{label}", daemon=True)
             self._active_run = thread
             thread.start()
         else:
-            # scripted / piped / CI: no live prompt to render onto, so advance
-            # synchronously -- same notifications, deterministic order.
             worker()
+
+    def _do_resume(self, args: list[str]) -> bool:
+        if self._active_run is not None and self._active_run.is_alive():
+            self._write("a run is already in progress -- wait for it to finish.")
+            return True
+        flows = self._flows_dir()
+        if flows is None:
+            return True
+        # resolve which execution to resume (bare -> the most recent resumable one)
+        store = self._open_store()
+        if store is None:
+            return True
+        try:
+            if args:
+                row = store.execution(args[0]) or self._find_execution_prefix(store, args[0])
+                if row is None:
+                    self._write(f"no execution '{args[0]}'. try '/replay' to list them.")
+                    return True
+            else:
+                resumable = [e for e in store.executions() if e["status"] in ("stopped", "running")]
+                if not resumable:
+                    self._write("no stopped run to resume.")
+                    return True
+                row = resumable[-1]  # most recent
+        finally:
+            store.close()
+
+        # find the workflow this execution ran, by name, in the current flows folder
+        execution_id = row["execution_id"]
+        wanted = row["workflow_name"]
+        match = next(
+            (d for d in discovery.discover_workflows(flows) if d.name == wanted and d.workflow),
+            None,
+        )
+        if match is None:
+            self._write(f"can't resume: workflow '{wanted}' isn't in {flows} anymore.")
+            return True
+        workflow = match.workflow
+        shot_config = self._build_shot_config()
+        if self._rich_input:
+            self._write(
+                f"resuming '{wanted}' ({execution_id[:12]}) in the background; "
+                "progress appears as it advances, the prompt stays free."
+            )
+        else:
+            self._write(f"resuming '{wanted}' ({execution_id[:12]})...")
+
+        def do_resume(orch, progress, stop) -> None:
+            orch.resume(
+                execution_id, workflow, shot_config=shot_config, progress=progress, stop=stop
+            )
+
+        self._launch(f"resume-{wanted}", do_resume)
+        return True
 
     def _run_progress_reporter(self) -> Callable[["orchestrator.RunProgress"], None]:
         """Render the engine's advancement notifications onto the prompt as they

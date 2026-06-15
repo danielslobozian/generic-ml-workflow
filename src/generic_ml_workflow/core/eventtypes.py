@@ -43,6 +43,7 @@ class EventType(str, Enum):
     WORKFLOW_EXECUTION_COMPLETED = "workflow_execution.completed"
     WORKFLOW_EXECUTION_FAILED = "workflow_execution.failed"
     WORKFLOW_EXECUTION_STOPPED = "workflow_execution.stopped"
+    WORKFLOW_EXECUTION_RESUMED = "workflow_execution.resumed"
     RUN_INPUT_PROVIDED = "run_input.provided"
     TIER_OVERRIDDEN = "tier.overridden"
     STEP_STARTED = "step.started"
@@ -116,6 +117,16 @@ class WorkflowExecutionStopped(Payload):
     event_type = EventType.WORKFLOW_EXECUTION_STOPPED
     reason: str | None = None
     step_name: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowExecutionResumed(Payload):
+    """A stopped/interrupted run was picked back up. Marks the run running again;
+    the engine rebuilds the context-fold from the prior events and continues from
+    the first unfinished step (the step is the unit of resume, DESIGN §11)."""
+
+    event_type = EventType.WORKFLOW_EXECUTION_RESUMED
+    from_step: str | None = None  # the first step the resume re-enters at, if known
 
 
 @dataclass(frozen=True)
@@ -198,6 +209,7 @@ _REGISTRY: dict[EventType, type[Payload]] = {
         WorkflowExecutionCompleted,
         WorkflowExecutionFailed,
         WorkflowExecutionStopped,
+        WorkflowExecutionResumed,
         RunInputProvided,
         TierOverridden,
         StepStarted,

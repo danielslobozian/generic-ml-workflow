@@ -208,6 +208,33 @@ class Orchestrator:
             )
             context[name] = value
 
+        return self._walk(
+            workflow,
+            execution_id,
+            context,
+            completed=set(),
+            tier_overrides=tier_overrides,
+            shot_config=shot_config,
+            progress=progress,
+            stop=stop,
+        )
+
+    def _walk(
+        self,
+        workflow,
+        execution_id,
+        context,
+        *,
+        completed,
+        tier_overrides,
+        shot_config,
+        progress,
+        stop,
+    ) -> RunReport:
+        """Walk the steps once -- shared by a fresh ``run`` (empty context, nothing
+        completed) and a ``resume`` (context rebuilt from the log, prior steps in
+        ``completed`` and skipped). Emits the terminal event (completed / failed /
+        stopped) and the matching progress, then returns the report."""
         report = RunReport(execution_id=execution_id, completed=False)
         bindings = self._binding_map(workflow)
         tier_overrides = tier_overrides or {}
@@ -227,6 +254,8 @@ class Orchestrator:
             return report
 
         for step_number, step in enumerate(workflow.steps, start=1):
+            if step.id in completed:  # already done in a prior segment (resume)
+                continue
             if stop is not None and stop.requested():  # asked to stop before this step
                 return record_stopped(None)
 
@@ -298,6 +327,68 @@ class Orchestrator:
         report.completed = True
         progress(RunProgress(RunPhase.RUN_COMPLETED, execution_id, step_count=step_count))
         return report
+
+    def resume(
+        self,
+        execution_id: str,
+        workflow: Workflow,
+        *,
+        shot_config: ShotConfig | None = None,
+        tier_overrides: dict[str, Tier] | None = None,
+        progress: ProgressReporter = _ignore_progress,
+        stop: StopControl | None = None,
+    ) -> RunReport:
+        """Continue a stopped or interrupted execution. Rebuilds the context-fold and
+        the set of completed steps from the run's own events (the log is the
+        authority; DESIGN §11), marks it running again, and walks the unfinished
+        steps on the same execution id. An interrupted step (started, never
+        completed) simply runs again -- the step is the unit of resume. Uses the
+        currently-loaded workflow/config, not the originally-stamped commit (strict
+        same-commit resume is the 0.1.5 time-travel slice)."""
+        row = self._store.execution(execution_id)
+        if row is None:
+            raise OrchestratorError(f"no execution '{execution_id}' to resume")
+        if row["status"] in ("completed", "failed"):
+            raise OrchestratorError(
+                f"execution '{execution_id}' is {row['status']} -- nothing to resume"
+            )
+        result = workflow.validate()
+        if not result.ok:
+            raise OrchestratorError(
+                "workflow does not validate; fix these before resuming:\n  "
+                + "\n  ".join(result.errors)
+            )
+        context, completed = self._rebuild(execution_id)
+        first_unfinished = next((s.id for s in workflow.steps if s.id not in completed), None)
+        self._store.emit(
+            et.WorkflowExecutionResumed(from_step=first_unfinished),
+            execution_id=execution_id,
+        )
+        return self._walk(
+            workflow,
+            execution_id,
+            context,
+            completed=completed,
+            tier_overrides=tier_overrides or {},
+            shot_config=shot_config,
+            progress=progress,
+            stop=stop,
+        )
+
+    def _rebuild(self, execution_id: str) -> tuple[dict[str, object], set[str]]:
+        """Rebuild the context-fold (run-inputs + artifact pointers) and the set of
+        completed step names from an execution's recorded events -- a read-model, not
+        a re-execution (DESIGN §11)."""
+        context: dict[str, object] = {}
+        completed: set[str] = set()
+        for event in self._store.replay(execution_id):
+            if event.event_type is et.EventType.RUN_INPUT_PROVIDED:
+                context[event.payload.name] = event.payload.value
+            elif event.event_type is et.EventType.ARTIFACT_CREATED:
+                context[event.payload.name] = Path(event.payload.path)
+            elif event.event_type is et.EventType.STEP_COMPLETED:
+                completed.add(event.payload.step_name)
+        return context, completed
 
     def _run_step(self, step, execution_id, context, bindings, report, stop=None) -> bool:
         self._store.emit(

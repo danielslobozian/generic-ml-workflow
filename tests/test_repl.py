@@ -780,3 +780,27 @@ def test_stop_command_when_nothing_is_running():
     repl = Repl(read=lambda p: None, write=out.append)
     repl._do_stop([])
     assert "nothing is running" in "\n".join(out)
+
+
+# --- 0.0.8: /resume resolution (deterministic; the run mechanics live in the
+#     orchestrator tests, which don't need the background worker) ----------------
+
+
+def _cfg_at(tmp_path):
+    flows = tmp_path / "flows"
+    flows.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[paths]\nflows = "{flows}"\nstate = "{state}"\n', encoding="utf-8")
+    return cfg
+
+
+def test_resume_with_nothing_to_resume_says_so(tmp_path):
+    out, _ = drive_at(["/resume", "/quit"], PRESENT, _cfg_at(tmp_path))
+    assert "no stopped run to resume" in out
+
+
+def test_resume_unknown_execution_says_so(tmp_path):
+    out, _ = drive_at(["/resume ghost", "/quit"], PRESENT, _cfg_at(tmp_path))
+    assert "no execution 'ghost'" in out

@@ -543,3 +543,59 @@ def test_a_run_with_no_stop_completes_normally(tmp_path):
     wf = _demo_workflow(tmp_path)
     report = Orchestrator(store, tmp_path / "ws").run(wf, {"url": "x"}, STAMP)
     assert report.completed
+
+
+# --- 0.0.8: resume -- continue a stopped run, rebuilt from its own log -----------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_resume_continues_a_stopped_run_from_the_log(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    orch = Orchestrator(store, tmp_path / "ws")
+
+    # run, but stop the moment the first step completes
+    stop = StopControl()
+
+    def progress(p: RunProgress) -> None:
+        if p.phase is RunPhase.STEP_COMPLETED and p.step_name == "fetch":
+            stop.request()
+
+    first = orch.run(wf, {"url": "hello world"}, STAMP, progress=progress, stop=stop)
+    assert not first.completed
+    assert first.steps_run == ["fetch"]  # extract never started
+    assert store.execution(first.execution_id)["status"] == "stopped"
+
+    # resume the same execution: skip fetch, run extract, complete
+    second = orch.resume(first.execution_id, wf)
+    assert second.execution_id == first.execution_id  # same run, continued
+    assert second.completed
+    assert second.steps_run == ["extract"]  # only the unfinished step ran this segment
+    assert store.execution(first.execution_id)["status"] == "completed"
+
+    events = store.replay(first.execution_id)
+    types = [e.event_type for e in events]
+    assert et.EventType.WORKFLOW_EXECUTION_RESUMED in types
+    assert types[-1] is et.EventType.WORKFLOW_EXECUTION_COMPLETED
+
+    # the resumed step saw the first step's product -> the context-fold was rebuilt
+    artifacts = [e for e in events if e.event_type is et.EventType.ARTIFACT_CREATED]
+    text_event = next(e for e in artifacts if e.payload.name == "page_text")
+    assert Path(text_event.payload.path).read_text().strip() == "hello world"
+
+
+def test_resume_refuses_a_completed_run(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    orch = Orchestrator(store, tmp_path / "ws")
+    report = orch.run(wf, {"url": "x"}, STAMP)
+    assert report.completed
+    with pytest.raises(OrchestratorError, match="nothing to resume"):
+        orch.resume(report.execution_id, wf)
+
+
+def test_resume_unknown_execution_is_loud(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    with pytest.raises(OrchestratorError, match="no execution"):
+        Orchestrator(store, tmp_path / "ws").resume("does-not-exist", wf)

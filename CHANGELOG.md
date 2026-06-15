@@ -30,6 +30,17 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   resumable. The engine gained a `stop=` argument (a `StopControl` the surface
   triggers from the prompt thread); it stays synchronous and thread-unaware. Child
   processes now run in their own process group so one signal reaches the whole tree.
+- **Resume a stopped run.** `/resume [<execution>]` continues a stopped or
+  interrupted execution — bare, it picks the most recent resumable one. The engine
+  rebuilds the run's context-fold (interview answers + artifact pointers) and the
+  set of completed steps from the run's own events — a read-model, not a
+  re-execution — marks it running again with a `workflow_execution.resumed` event,
+  and walks only the unfinished steps on the same execution id. A step that was cut
+  off mid-flight simply runs again: the step is the unit of resume, and a fresh run
+  folder plus a shot's cache hit make that cheap. `run` and `resume` now share one
+  step-walk (`run` is "resume from an empty context"). Resume uses the
+  currently-loaded workflow and config, not the originally-stamped commit
+  (same-commit time travel is a later slice).
 
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7

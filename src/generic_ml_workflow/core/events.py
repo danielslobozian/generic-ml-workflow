@@ -213,6 +213,11 @@ class EventStore:
                 "UPDATE workflow_executions SET status='stopped',updated_at=? WHERE execution_id=?",
                 (e.occurred_at, e.execution_id),
             )
+        elif e.event_type is EventType.WORKFLOW_EXECUTION_RESUMED:
+            c.execute(
+                "UPDATE workflow_executions SET status='running',updated_at=? WHERE execution_id=?",
+                (e.occurred_at, e.execution_id),
+            )
 
     # --- reads ---
     def replay(self, execution_id: str) -> list[Event]:
