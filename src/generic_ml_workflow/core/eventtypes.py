@@ -42,6 +42,7 @@ class EventType(str, Enum):
     WORKFLOW_EXECUTION_STARTED = "workflow_execution.started"
     WORKFLOW_EXECUTION_COMPLETED = "workflow_execution.completed"
     WORKFLOW_EXECUTION_FAILED = "workflow_execution.failed"
+    WORKFLOW_EXECUTION_STOPPED = "workflow_execution.stopped"
     RUN_INPUT_PROVIDED = "run_input.provided"
     TIER_OVERRIDDEN = "tier.overridden"
     STEP_STARTED = "step.started"
@@ -104,6 +105,17 @@ class WorkflowExecutionCompleted(Payload):
 class WorkflowExecutionFailed(Payload):
     event_type = EventType.WORKFLOW_EXECUTION_FAILED
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowExecutionStopped(Payload):
+    """The user stopped the run (via the surface) before it finished. Distinct from
+    failed: nothing went wrong, the run was halted on request. The interrupted step
+    (if one was mid-flight) is named so `/replay` can show where it stopped."""
+
+    event_type = EventType.WORKFLOW_EXECUTION_STOPPED
+    reason: str | None = None
+    step_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +197,7 @@ _REGISTRY: dict[EventType, type[Payload]] = {
         WorkflowExecutionStarted,
         WorkflowExecutionCompleted,
         WorkflowExecutionFailed,
+        WorkflowExecutionStopped,
         RunInputProvided,
         TierOverridden,
         StepStarted,

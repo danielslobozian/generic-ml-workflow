@@ -44,6 +44,7 @@ from typing import Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
 
@@ -58,6 +59,7 @@ from generic_ml_workflow.core import (
     paths,
     reconcile,
     stamp,
+    stopping,
 )
 from generic_ml_workflow.repl import banner
 
@@ -129,6 +131,7 @@ class Repl:
         self._banner_style = banner.DEFAULT
         self._workflow_names: tuple[str, ...] = ()  # for /run + /validate tab-completion
         self._active_run: threading.Thread | None = None  # the one background run, if any
+        self._active_stop: stopping.StopControl | None = None  # its stop control, if any
         self._verbs: dict[str, _Verb] = {
             "clients": _Verb(
                 Repl._do_clients, "/clients", "re-run detection and list what gmlcache sees"
@@ -152,6 +155,11 @@ class Repl:
                 Repl._do_run,
                 "/run [<workflow>] [<step>=<tier> ...]",
                 "run a workflow (the run interview); optionally override a step's tier",
+            ),
+            "stop": _Verb(
+                Repl._do_stop,
+                "/stop",
+                "stop the run in progress (also: press Escape)",
             ),
             "replay": _Verb(
                 Repl._do_replay,
@@ -214,10 +222,21 @@ class Repl:
         piped runs free of its rendering control codes."""
         if not self._rich_input or not sys.stdin.isatty():
             return self._read
+
+        # Escape stops the run in progress. Non-eager on purpose: a lone Escape
+        # fires after the escape-sequence flush timeout, so arrow keys and other
+        # escape sequences are unaffected. No run in progress -> a harmless no-op.
+        keys = KeyBindings()
+
+        @keys.add("escape")
+        def _(_event) -> None:
+            self._request_stop()
+
         session = PromptSession(
             completer=_CommandCompleter(self),
             complete_while_typing=True,
             complete_style=CompleteStyle.COLUMN,
+            key_bindings=keys,
         )
 
         def read(prompt: str) -> str | None:
@@ -484,6 +503,26 @@ class Repl:
         self._execute_run(workflow, run_inputs, flows, overrides)
         return True
 
+    def _do_stop(self, args: list[str]) -> bool:
+        if not self._request_stop():
+            self._write("nothing is running.")
+        return True
+
+    def _request_stop(self) -> bool:
+        """Ask the run in progress to stop. Returns True if there was one to stop.
+        Used by both ``/stop`` and the Escape key binding. The engine reads the
+        request at the next boundary; a step running right now is torn down at once
+        (cascading to the cache, which tears down the client)."""
+        if (
+            self._active_run is not None
+            and self._active_run.is_alive()
+            and self._active_stop is not None
+        ):
+            self._write("stopping the run...")
+            self._active_stop.request()
+            return True
+        return False
+
     def _parse_tier_overrides(self, workflow, tokens: list[str]) -> dict | None:
         """Parse ``<step>=<tier>`` tokens into ``{step_id: Tier}``, validated against
         the workflow. Returns the map (possibly empty) or ``None`` after reporting a
@@ -531,6 +570,8 @@ class Repl:
         else:
             self._write(f"running '{workflow.name}' ({step_count} steps)...")
         report_progress = self._run_progress_reporter()
+        stop = stopping.StopControl()
+        self._active_stop = stop
 
         def worker() -> None:
             # The whole run -- including the event store's lifetime -- lives in this
@@ -550,6 +591,7 @@ class Repl:
                     shot_config=shot_config,
                     tier_overrides=overrides,
                     progress=report_progress,
+                    stop=stop,
                 )
             except orchestrator.OrchestratorError as exc:
                 self._write(f"  cannot run: {exc}")
@@ -593,8 +635,12 @@ class Repl:
                 self._write(f"see the story with '/replay {eid}'.")
             elif progress.phase is phase.RUN_FAILED:
                 eid = progress.execution_id[:12]
-                self._write(f"  stopped: {progress.reason}")
+                self._write(f"  failed: {progress.reason}")
                 self._write(f"see '/replay {eid}' for details.")
+            elif progress.phase is phase.RUN_STOPPED:
+                eid = progress.execution_id[:12]
+                where = f" during '{progress.step_name}'" if progress.step_name else ""
+                self._write(f"stopped{where}. execution {eid} can be resumed later.")
             # RUN_STARTED needs no line -- the launch message already announced it.
 
         return report

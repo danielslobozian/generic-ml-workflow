@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from generic_ml_workflow.core.contract import StepNature, StepSpec
+from generic_ml_workflow.core.stopping import StopControl, run_supervised
 
 
 class RunnerError(Exception):
@@ -78,6 +79,7 @@ def run_executable(
     *,
     attempt: int = 1,
     timeout: float = 300.0,
+    stop: StopControl | None = None,
 ) -> StepResult:
     """Run a user-supplied executable step in an isolated ``run_dir``.
 
@@ -85,7 +87,10 @@ def run_executable(
       * a ``Path`` -> the file is copied into the run folder under the port name,
       * anything else -> ``str(value)`` is written to a file named after the port.
     The entrypoint is launched with ``run_dir`` as cwd. Each declared output's
-    ``filename`` must exist in ``run_dir`` afterwards, or the step failed.
+    ``filename`` must exist in ``run_dir`` afterwards, or the step failed. When
+    ``stop`` is given and a stop is requested mid-run, the child is torn down and
+    the step returns a non-zero (killed) result -- the orchestrator reads the stop
+    and records the run as stopped, not failed.
     """
     if spec.nature is not StepNature.EXECUTABLE:
         raise RunnerError(f"step '{spec.id}' is not executable")
@@ -109,13 +114,7 @@ def run_executable(
     argv = _resolve_entrypoint(spec.entrypoint)
     start = time.monotonic()
     try:
-        proc = subprocess.run(
-            argv,
-            cwd=str(run_dir),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop)
     except FileNotFoundError as exc:
         raise RunnerError(f"step '{spec.id}': entrypoint not found: {spec.entrypoint}") from exc
     except subprocess.TimeoutExpired as exc:

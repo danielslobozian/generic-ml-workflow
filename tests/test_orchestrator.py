@@ -31,6 +31,7 @@ from generic_ml_workflow.core.orchestrator import (
     warm_up,
 )
 from generic_ml_workflow.core.stamp import Stamp
+from generic_ml_workflow.core.stopping import StopControl
 
 STAMP = Stamp(commit="abc123", branch="main", engine_version="0.0.5.dev0")
 
@@ -487,4 +488,58 @@ def test_default_reporter_is_a_noop(tmp_path):
     store = EventStore(":memory:")
     wf = _demo_workflow(tmp_path)
     report = Orchestrator(store, tmp_path / "ws").run(wf, {"url": "x"}, STAMP)  # no progress=
+    assert report.completed
+
+
+# --- 0.0.8: clean stop -- a stopped run is recorded distinctly from a failed one
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_stop_before_a_step_records_a_stopped_run(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    stop = StopControl()
+    stop.request()  # already requested -> the run stops before step one
+    seen: list[RunProgress] = []
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf, {"url": "x"}, STAMP, progress=seen.append, stop=stop
+    )
+    assert not report.completed
+    assert report.stopped_reason == "stopped by request"
+    assert seen[-1].phase is RunPhase.RUN_STOPPED
+    assert store.execution(report.execution_id)["status"] == "stopped"
+    types = [e.event_type for e in store.replay(report.execution_id)]
+    assert et.EventType.WORKFLOW_EXECUTION_STOPPED in types
+    assert et.EventType.WORKFLOW_EXECUTION_FAILED not in types  # stopped != failed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_stop_after_first_step_does_not_start_the_second(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    stop = StopControl()
+    seen: list[RunProgress] = []
+
+    def progress(p: RunProgress) -> None:
+        seen.append(p)
+        # ask to stop the moment the first step completes
+        if p.phase is RunPhase.STEP_COMPLETED and p.step_name == "fetch":
+            stop.request()
+
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf, {"url": "x"}, STAMP, progress=progress, stop=stop
+    )
+    assert not report.completed
+    assert report.stopped_reason == "stopped by request"
+    assert "fetch" in report.steps_run and "extract" not in report.steps_run
+    assert RunPhase.RUN_STOPPED in [p.phase for p in seen]
+    assert store.execution(report.execution_id)["status"] == "stopped"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_a_run_with_no_stop_completes_normally(tmp_path):
+    # the stop path must not perturb an ordinary run (stop defaults to None)
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {"url": "x"}, STAMP)
     assert report.completed

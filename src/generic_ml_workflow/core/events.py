@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
     workflow_name  TEXT,
     input_type     TEXT,
     job_id         TEXT,
-    status         TEXT,                                -- running | completed | failed
+    status         TEXT,                                -- running | completed | failed | stopped
     commit_hash    TEXT,
     branch         TEXT,
     engine_version TEXT,
@@ -206,6 +206,11 @@ class EventStore:
         elif e.event_type is EventType.WORKFLOW_EXECUTION_FAILED:
             c.execute(
                 "UPDATE workflow_executions SET status='failed',updated_at=? WHERE execution_id=?",
+                (e.occurred_at, e.execution_id),
+            )
+        elif e.event_type is EventType.WORKFLOW_EXECUTION_STOPPED:
+            c.execute(
+                "UPDATE workflow_executions SET status='stopped',updated_at=? WHERE execution_id=?",
                 (e.occurred_at, e.execution_id),
             )
 

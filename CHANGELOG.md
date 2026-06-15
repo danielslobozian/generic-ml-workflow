@@ -21,6 +21,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   runs advance synchronously (no live prompt to render onto), preserving
   deterministic order. Stopping a run is the next slice; this one only adds
   background advancement and notifications.
+- **Clean stop (across the engine and the cache).** A run in progress can be stopped
+  with `/stop` or by pressing **Escape**. Between steps the engine halts cleanly;
+  mid-step it tears down the child the step is running — which, for a shot, is the
+  gmlcache subprocess, and gmlcache in turn tears down the client (capability sinks
+  to the cache). A stop is recorded as a new `workflow_execution.stopped` event with
+  its own `stopped` status — distinct from a failure — and the execution stays
+  resumable. The engine gained a `stop=` argument (a `StopControl` the surface
+  triggers from the prompt thread); it stays synchronous and thread-unaware. Child
+  processes now run in their own process group so one signal reaches the whole tree.
 
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7

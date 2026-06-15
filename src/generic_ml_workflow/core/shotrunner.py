@@ -34,6 +34,7 @@ from pathlib import Path
 
 from generic_ml_workflow.core.contract import StepNature, StepSpec
 from generic_ml_workflow.core.envelope import Envelope
+from generic_ml_workflow.core.stopping import StopControl, run_supervised
 
 
 class ShotError(Exception):
@@ -130,13 +131,17 @@ def run_shot(
     attempt: int = 1,
     timeout: float = 600.0,
     gmlcache: str = "gmlcache",
-    _runner=subprocess.run,
+    stop: "StopControl | None" = None,
+    _runner=None,
 ) -> ShotResult:
     """Run an interpretable step through gmlcache in an isolated run folder.
 
     ``_runner`` is injectable so the subprocess call can be exercised in tests
     without a real gmlcache; in CI a recorded cassette + offline mode drives the
-    real binary deterministically.
+    real binary deterministically. When ``_runner`` is left ``None`` the real,
+    **supervised** runner is used: ``stop`` (if given) can tear down the gmlcache
+    subprocess mid-shot, and gmlcache in turn tears down the client (capability
+    sinks to the cache, invariant 3) -- the engine never reaches past its child.
     """
     if spec.nature is not StepNature.INTERPRETABLE:
         raise ShotError(f"step '{spec.id}' is not an interpretable (shot) step")
@@ -154,7 +159,10 @@ def run_shot(
 
     start = time.monotonic()
     try:
-        proc = _runner(argv, cwd=str(run_dir), capture_output=True, text=True, timeout=timeout)
+        if _runner is None:
+            proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop)
+        else:
+            proc = _runner(argv, cwd=str(run_dir), capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise ShotError(
             f"step '{spec.id}': gmlcache not found -- it is the execution arm and must be installed"

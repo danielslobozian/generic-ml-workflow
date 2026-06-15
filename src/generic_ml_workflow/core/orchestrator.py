@@ -47,6 +47,7 @@ from generic_ml_workflow.core.contract import (
 from generic_ml_workflow.core.envelope import build_envelope
 from generic_ml_workflow.core.events import EventStore, new_execution_id
 from generic_ml_workflow.core.stamp import Stamp
+from generic_ml_workflow.core.stopping import StopControl
 from generic_ml_workflow.core import eventtypes as et
 
 
@@ -66,6 +67,7 @@ class RunPhase(Enum):
     STEP_FAILED = "step_failed"
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
+    RUN_STOPPED = "run_stopped"
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,7 @@ class Orchestrator:
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         progress: ProgressReporter = _ignore_progress,
+        stop: StopControl | None = None,
     ) -> RunReport:
         # gate: the definition must be valid (warnings are fine, errors are not)
         result = workflow.validate()
@@ -211,7 +214,22 @@ class Orchestrator:
         step_count = len(workflow.steps)
         progress(RunProgress(RunPhase.RUN_STARTED, execution_id, step_count=step_count))
 
+        def record_stopped(step_name: str | None) -> RunReport:
+            reason = "stopped by request"
+            report.stopped_reason = reason
+            self._store.emit(
+                et.WorkflowExecutionStopped(reason=reason, step_name=step_name),
+                execution_id=execution_id,
+            )
+            progress(
+                RunProgress(RunPhase.RUN_STOPPED, execution_id, step_name=step_name, reason=reason)
+            )
+            return report
+
         for step_number, step in enumerate(workflow.steps, start=1):
+            if stop is not None and stop.requested():  # asked to stop before this step
+                return record_stopped(None)
+
             if step.nature is StepNature.INTERPRETABLE and shot_config is None:
                 # no shot configuration supplied -> stop honestly, do not fake it
                 report.stopped_reason = (
@@ -238,10 +256,15 @@ class Orchestrator:
             )
             if step.nature is StepNature.INTERPRETABLE:
                 step_ok = self._run_shot(
-                    step, execution_id, context, bindings, report, shot_config, tier_overrides
+                    step, execution_id, context, bindings, report, shot_config, tier_overrides, stop
                 )
             else:
-                step_ok = self._run_step(step, execution_id, context, bindings, report)
+                step_ok = self._run_step(step, execution_id, context, bindings, report, stop)
+
+            if stop is not None and stop.requested():
+                # the step was cut short by our stop (its child was torn down):
+                # record a stopped run, not a failure.
+                return record_stopped(step.id)
 
             if not step_ok:
                 reason = f"step '{step.id}' failed"
@@ -276,7 +299,7 @@ class Orchestrator:
         progress(RunProgress(RunPhase.RUN_COMPLETED, execution_id, step_count=step_count))
         return report
 
-    def _run_step(self, step, execution_id, context, bindings, report) -> bool:
+    def _run_step(self, step, execution_id, context, bindings, report, stop=None) -> bool:
         self._store.emit(
             et.StepStarted(step_name=step.id), execution_id=execution_id, step_name=step.id
         )
@@ -284,7 +307,7 @@ class Orchestrator:
         inputs = self._resolve_inputs(step, context, bindings)
         run_dir = self._workspace / "executions" / execution_id / step.id
         try:
-            result = runner.run_executable(step, run_dir, inputs)
+            result = runner.run_executable(step, run_dir, inputs, stop=stop)
         except runner.RunnerError as exc:
             self._store.emit(
                 et.StepFailed(step_name=step.id, reason=str(exc)),
@@ -322,7 +345,15 @@ class Orchestrator:
         return True
 
     def _run_shot(
-        self, step, execution_id, context, bindings, report, shot_config, tier_overrides=None
+        self,
+        step,
+        execution_id,
+        context,
+        bindings,
+        report,
+        shot_config,
+        tier_overrides=None,
+        stop=None,
     ) -> bool:
         tier_overrides = tier_overrides or {}
         self._store.emit(
@@ -385,6 +416,7 @@ class Orchestrator:
                 resolution,
                 run_dir,
                 mode=shot_config.mode,
+                stop=stop,
             )
         except shotrunner.ShotError as exc:
             self._store.emit(

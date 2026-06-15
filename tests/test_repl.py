@@ -692,12 +692,14 @@ def test_progress_reporter_renders_each_phase():
     report(RunProgress(RunPhase.STEP_COMPLETED, eid, step_name="fetch"))
     report(RunProgress(RunPhase.STEP_FAILED, eid, step_name="extract"))
     report(RunProgress(RunPhase.RUN_FAILED, eid, reason="step 'extract' failed"))
+    report(RunProgress(RunPhase.RUN_STOPPED, eid, step_name="enrich", reason="stopped by request"))
     report(RunProgress(RunPhase.RUN_COMPLETED, eid))
     text = "\n".join(out)
     assert "\u2192 step 1/2: fetch" in text
     assert "\u2713 fetch" in text
     assert "\u2717 extract failed" in text
-    assert "stopped: step 'extract' failed" in text
+    assert "failed: step 'extract' failed" in text
+    assert "stopped during 'enrich'" in text
     assert "completed" in text
     # the replay hint uses the short id
     assert "abcdef123456" in text
@@ -747,3 +749,34 @@ def test_second_run_is_refused_while_one_is_active(tmp_path):
     refused = repl._do_run(["demo"])
     assert refused is True
     assert "already in progress" in "\n".join(out)
+
+
+def test_stop_command_requests_the_active_run():
+    """/stop (and Escape, via the same _request_stop) asks the run in progress to
+    stop; the engine reads it at the next boundary."""
+    out: list[str] = []
+    repl = Repl(read=lambda p: None, write=out.append)
+
+    class _FakeStop:
+        def __init__(self):
+            self.asked = False
+
+        def request(self):
+            self.asked = True
+
+    class _Alive:
+        def is_alive(self):
+            return True
+
+    repl._active_run = _Alive()
+    repl._active_stop = _FakeStop()
+    assert repl._do_stop([]) is True
+    assert repl._active_stop.asked is True
+    assert "stopping the run" in "\n".join(out)
+
+
+def test_stop_command_when_nothing_is_running():
+    out: list[str] = []
+    repl = Repl(read=lambda p: None, write=out.append)
+    repl._do_stop([])
+    assert "nothing is running" in "\n".join(out)
