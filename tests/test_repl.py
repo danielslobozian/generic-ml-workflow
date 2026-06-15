@@ -673,3 +673,77 @@ def test_no_workflow_completion_for_other_commands():
     repl, _ = _repl()
     repl._workflow_names = ("feature",)
     assert repl._completions("/status ", len("/status ")) == []
+
+
+# --- 0.0.8: background execution + live progress -------------------------------
+
+from generic_ml_workflow.core.orchestrator import RunPhase, RunProgress  # noqa: E402
+
+
+def test_progress_reporter_renders_each_phase():
+    """The surface turns the engine's notifications into prompt lines (the engine
+    knows nothing of this rendering -- it only calls the reporter)."""
+    out: list[str] = []
+    repl = Repl(read=lambda p: None, write=out.append)
+    report = repl._run_progress_reporter()
+    eid = "abcdef123456ZZ"
+    report(RunProgress(RunPhase.RUN_STARTED, eid, step_count=2))
+    report(RunProgress(RunPhase.STEP_STARTED, eid, step_name="fetch", step_number=1, step_count=2))
+    report(RunProgress(RunPhase.STEP_COMPLETED, eid, step_name="fetch"))
+    report(RunProgress(RunPhase.STEP_FAILED, eid, step_name="extract"))
+    report(RunProgress(RunPhase.RUN_FAILED, eid, reason="step 'extract' failed"))
+    report(RunProgress(RunPhase.RUN_COMPLETED, eid))
+    text = "\n".join(out)
+    assert "\u2192 step 1/2: fetch" in text
+    assert "\u2713 fetch" in text
+    assert "\u2717 extract failed" in text
+    assert "stopped: step 'extract' failed" in text
+    assert "completed" in text
+    # the replay hint uses the short id
+    assert "abcdef123456" in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_run_advances_on_a_background_worker_when_interactive(tmp_path):
+    """On the interactive terminal the run goes onto a worker thread and the prompt
+    returns immediately; progress arrives as the worker advances. We force the
+    interactive branch (the reader still stays plain -- stdin is not a tty in tests)
+    and join the worker before asserting."""
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    script = iter(["/run demo", "hello world", "/quit"])
+    out: list[str] = []
+    repl = Repl(
+        read=lambda p: next(script, None),
+        write=out.append,
+        discover=lambda: PRESENT,
+        config_file=cfg,
+    )
+    repl._rich_input = True  # take the background branch in _execute_run
+    repl.run()
+    assert repl._active_run is not None  # a worker was launched
+    repl._active_run.join(timeout=10)
+    assert not repl._active_run.is_alive()
+    text = "\n".join(out)
+    assert "in the background" in text
+    assert "\u2713 fetch" in text and "\u2713 extract" in text
+    assert "completed" in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_second_run_is_refused_while_one_is_active(tmp_path):
+    """A run already in flight blocks a second launch (single active run, 0.0.8)."""
+    cfg, flows = _run_cfg(tmp_path)
+    _write_demo(flows)
+    out: list[str] = []
+    repl = Repl(read=lambda p: None, write=out.append, discover=lambda: PRESENT, config_file=cfg)
+
+    class _StillRunning:
+        def is_alive(self):
+            return True
+
+    repl._active_run = _StillRunning()  # pretend a run is in flight
+    repl._startup_config()  # resolve settings so the verb can run
+    refused = repl._do_run(["demo"])
+    assert refused is True
+    assert "already in progress" in "\n".join(out)

@@ -9,6 +9,19 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- **Background execution + live progress.** A `/run` on the interactive terminal now
+  advances on a background worker thread and returns the prompt immediately;
+  progress (`→ step n/total`, `✓`/`✗` per step, the final outcome) appears above the
+  live prompt as the run advances, rendered through prompt_toolkit's patched output.
+  The engine gained a side-channel **progress reporter** (`Orchestrator.run(...,
+  progress=...)`) — a no-op by default, so it stays synchronous and thread-unaware;
+  the surface owns the thread and the rendering. A single run is active at a time (a
+  second `/run` is refused until it finishes). Scripted / piped / non-interactive
+  runs advance synchronously (no live prompt to render onto), preserving
+  deterministic order. Stopping a run is the next slice; this one only adds
+  background advancement and notifications.
+
 ### Changed
 - **Documentation — run modes, the execution context, and resume.** DESIGN §7
   defines **run modes** (one run-level selector: full-auto / full-manual /

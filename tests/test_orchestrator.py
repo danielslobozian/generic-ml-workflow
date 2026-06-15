@@ -23,7 +23,13 @@ from generic_ml_workflow.core.contract import (
     Workflow,
 )
 from generic_ml_workflow.core.events import EventStore
-from generic_ml_workflow.core.orchestrator import Orchestrator, OrchestratorError, warm_up
+from generic_ml_workflow.core.orchestrator import (
+    Orchestrator,
+    OrchestratorError,
+    RunPhase,
+    RunProgress,
+    warm_up,
+)
 from generic_ml_workflow.core.stamp import Stamp
 
 STAMP = Stamp(commit="abc123", branch="main", engine_version="0.0.5.dev0")
@@ -409,3 +415,76 @@ def test_no_override_event_when_tier_unchanged(tmp_path):
     assert report.completed and captured == [("summarize", "sonnet")]
     types = [e.event_type for e in store.replay(report.execution_id)]
     assert et.EventType.TIER_OVERRIDDEN not in types
+
+
+# --- 0.0.8: the engine announces advancement through a progress reporter ------
+# A side channel for a surface's live display, distinct from the event log. The
+# engine stays synchronous; the reporter is called at each boundary (DESIGN SS11).
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_progress_reports_every_boundary_on_success(tmp_path):
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    seen: list[RunProgress] = []
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf, {"url": "hello world"}, STAMP, progress=seen.append
+    )
+    assert report.completed
+    assert [p.phase for p in seen] == [
+        RunPhase.RUN_STARTED,
+        RunPhase.STEP_STARTED,
+        RunPhase.STEP_COMPLETED,
+        RunPhase.STEP_STARTED,
+        RunPhase.STEP_COMPLETED,
+        RunPhase.RUN_COMPLETED,
+    ]
+    # step boundaries name the step and number it within the count
+    started = [p for p in seen if p.phase is RunPhase.STEP_STARTED]
+    assert [(p.step_name, p.step_number, p.step_count) for p in started] == [
+        ("fetch", 1, 2),
+        ("extract", 2, 2),
+    ]
+    # every notification carries the same run identity (the surface needs no lookup)
+    assert {p.execution_id for p in seen} == {report.execution_id}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_progress_reports_step_failure_then_run_failure(tmp_path):
+    store = EventStore(":memory:")
+    bad = tmp_path / "bad.sh"
+    bad.write_text("exit 2\n", encoding="utf-8")
+    step = StepSpec(
+        id="boom", nature=StepNature.EXECUTABLE, entrypoint=str(bad), outputs=(_out("o", "o.txt"),)
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    seen: list[RunProgress] = []
+    Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP, progress=seen.append)
+    assert [p.phase for p in seen] == [
+        RunPhase.RUN_STARTED,
+        RunPhase.STEP_STARTED,
+        RunPhase.STEP_FAILED,
+        RunPhase.RUN_FAILED,
+    ]
+    assert seen[-1].reason == "step 'boom' failed"
+
+
+def test_progress_reports_run_failure_when_shot_unconfigured(tmp_path):
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="judge", nature=StepNature.INTERPRETABLE, cap="analyst", outputs=(_out("v", "v.md"),)
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    seen: list[RunProgress] = []
+    Orchestrator(store, tmp_path / "ws").run(wf, {}, STAMP, progress=seen.append)  # no shot_config
+    assert [p.phase for p in seen] == [RunPhase.RUN_STARTED, RunPhase.RUN_FAILED]
+    assert "no client/model" in seen[-1].reason
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_default_reporter_is_a_noop(tmp_path):
+    # omitting progress= must behave exactly as before (a run with no surface attached)
+    store = EventStore(":memory:")
+    wf = _demo_workflow(tmp_path)
+    report = Orchestrator(store, tmp_path / "ws").run(wf, {"url": "x"}, STAMP)  # no progress=
+    assert report.completed

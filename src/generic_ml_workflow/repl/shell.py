@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from generic_ml_workflow import __version__
@@ -126,6 +128,7 @@ class Repl:
         self._session: dict[str, object] = {}  # in-session overrides (the "flag" layer)
         self._banner_style = banner.DEFAULT
         self._workflow_names: tuple[str, ...] = ()  # for /run + /validate tab-completion
+        self._active_run: threading.Thread | None = None  # the one background run, if any
         self._verbs: dict[str, _Verb] = {
             "clients": _Verb(
                 Repl._do_clients, "/clients", "re-run detection and list what gmlcache sees"
@@ -219,7 +222,11 @@ class Repl:
 
         def read(prompt: str) -> str | None:
             try:
-                return session.prompt(prompt)
+                # patch_stdout lets the background run's progress (printed from its
+                # worker thread) appear *above* the live prompt without corrupting
+                # the line the user is typing.
+                with patch_stdout():
+                    return session.prompt(prompt)
             except EOFError:
                 return None
 
@@ -428,6 +435,9 @@ class Repl:
         return events.EventStore(db)
 
     def _do_run(self, args: list[str]) -> bool:
+        if self._active_run is not None and self._active_run.is_alive():
+            self._write("a run is already in progress -- wait for it to finish.")
+            return True
         flows = self._flows_dir()
         if flows is None:
             return True
@@ -505,38 +515,89 @@ class Repl:
         return overrides
 
     def _execute_run(self, workflow, run_inputs, flows, overrides=None) -> None:
-        store = self._open_store()
-        if store is None:
-            return
-        try:
-            st = stamp.read_stamp(flows)
-            if not st.versioned:
-                self._write("  (flows folder is unversioned -- recording the run as such)")
+        st = stamp.read_stamp(flows)
+        if not st.versioned:
+            self._write("  (flows folder is unversioned -- recording the run as such)")
+        shot_config = self._build_shot_config()
+        if overrides:
+            for step_id, tier in overrides.items():
+                self._write(f"  tier override: {step_id} -> {tier.value}")
+        step_count = len(workflow.steps)
+        if self._rich_input:
+            self._write(
+                f"running '{workflow.name}' in the background ({step_count} steps); "
+                "progress appears as it advances, the prompt stays free."
+            )
+        else:
+            self._write(f"running '{workflow.name}' ({step_count} steps)...")
+        report_progress = self._run_progress_reporter()
+
+        def worker() -> None:
+            # The whole run -- including the event store's lifetime -- lives in this
+            # one thread: a SQLite connection is thread-bound, so it is opened, used,
+            # and closed here, never handed across the prompt/worker boundary. The
+            # engine stays synchronous and thread-unaware, announcing only through
+            # the reporter (DESIGN.md invariant 24).
+            store = self._open_store()
+            if store is None:
+                return
             orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
-            shot_config = self._build_shot_config()
-            if overrides:
-                for step_id, tier in overrides.items():
-                    self._write(f"  tier override: {step_id} -> {tier.value}")
-            self._write(f"running '{workflow.name}'...")
             try:
-                report = orch.run(
-                    workflow, run_inputs, st, shot_config=shot_config, tier_overrides=overrides
+                orch.run(
+                    workflow,
+                    run_inputs,
+                    st,
+                    shot_config=shot_config,
+                    tier_overrides=overrides,
+                    progress=report_progress,
                 )
             except orchestrator.OrchestratorError as exc:
                 self._write(f"  cannot run: {exc}")
-                return
-            for step_id in report.steps_run:
-                self._write(f"  \u2713 {step_id}")
-            if report.completed:
-                self._write(f"done. execution {report.execution_id[:12]} completed.")
-                self._write(f"see the story with '/replay {report.execution_id[:12]}'.")
-            elif report.stopped_reason:
-                self._write(f"  stopped: {report.stopped_reason}")
-            elif report.failed_step:
-                self._write(f"  \u2717 step '{report.failed_step}' failed.")
-                self._write(f"see '/replay {report.execution_id[:12]}' for details.")
-        finally:
-            store.close()
+            finally:
+                store.close()
+
+        if self._rich_input:
+            # the real terminal: advance off the prompt thread so the prompt stays
+            # free; progress renders above it via patch_stdout.
+            thread = threading.Thread(
+                target=worker, name=f"gmlworkflow-run-{workflow.name}", daemon=True
+            )
+            self._active_run = thread
+            thread.start()
+        else:
+            # scripted / piped / CI: no live prompt to render onto, so advance
+            # synchronously -- same notifications, deterministic order.
+            worker()
+
+    def _run_progress_reporter(self) -> Callable[["orchestrator.RunProgress"], None]:
+        """Render the engine's advancement notifications onto the prompt as they
+        happen. The reporter is the surface's; the engine knows nothing of it beyond
+        calling it (DESIGN.md invariant 24). Thin-slice rendering: one line per
+        boundary through ``self._write``. The richer live region (a pinned status
+        area) is a later ergonomic pass, not the architecture."""
+        phase = orchestrator.RunPhase
+
+        def report(progress: "orchestrator.RunProgress") -> None:
+            if progress.phase is phase.STEP_STARTED:
+                self._write(
+                    f"  \u2192 step {progress.step_number}/{progress.step_count}: "
+                    f"{progress.step_name}"
+                )
+            elif progress.phase is phase.STEP_COMPLETED:
+                self._write(f"  \u2713 {progress.step_name}")
+            elif progress.phase is phase.STEP_FAILED:
+                self._write(f"  \u2717 {progress.step_name} failed")
+            elif progress.phase is phase.RUN_COMPLETED:
+                eid = progress.execution_id[:12]
+                self._write(f"done. execution {eid} completed.")
+                self._write(f"see the story with '/replay {eid}'.")
+            elif progress.phase is phase.RUN_FAILED:
+                eid = progress.execution_id[:12]
+                self._write(f"  stopped: {progress.reason}")
+                self._write(f"see '/replay {eid}' for details.")
+            # RUN_STARTED needs no line -- the launch message already announced it.
+
+        return report
 
     def _build_shot_config(self):
         """Build the shot resolution config from the user's ``[tiers]`` mapping.

@@ -31,7 +31,9 @@ Validation is the gate before any work: a workflow that does not pass
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from generic_ml_workflow.core import runner, shotrunner
@@ -50,6 +52,43 @@ from generic_ml_workflow.core import eventtypes as et
 
 class OrchestratorError(Exception):
     """The execution could not proceed (unrunnable definition, unmet requirement)."""
+
+
+class RunPhase(Enum):
+    """The advancement boundaries the engine announces as a run walks its steps.
+    These are *progress notifications* -- a side channel for a surface's live
+    display -- and are not the event log (the source of truth, DESIGN.md SS11). A
+    surface renders them; nothing about correctness depends on anyone listening."""
+
+    RUN_STARTED = "run_started"
+    STEP_STARTED = "step_started"
+    STEP_COMPLETED = "step_completed"
+    STEP_FAILED = "step_failed"
+    RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
+
+
+@dataclass(frozen=True)
+class RunProgress:
+    """One advancement notification. ``step_number`` is 1-based within
+    ``step_count``; ``step_name`` and ``reason`` are filled only where they apply
+    (a step boundary carries the name; a failure carries the reason)."""
+
+    phase: RunPhase
+    execution_id: str
+    step_name: str | None = None
+    step_number: int | None = None
+    step_count: int | None = None
+    reason: str | None = None
+
+
+# A surface supplies this to receive live advancement; the engine calls it at each
+# boundary and otherwise knows nothing of screens or threads (DESIGN.md invariant 24).
+ProgressReporter = Callable[[RunProgress], None]
+
+
+def _ignore_progress(_progress: RunProgress) -> None:
+    """The default reporter -- a run with no surface attached announces to no one."""
 
 
 @dataclass
@@ -131,6 +170,7 @@ class Orchestrator:
         credentials: set[str] | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
+        progress: ProgressReporter = _ignore_progress,
     ) -> RunReport:
         # gate: the definition must be valid (warnings are fine, errors are not)
         result = workflow.validate()
@@ -168,41 +208,72 @@ class Orchestrator:
         report = RunReport(execution_id=execution_id, completed=False)
         bindings = self._binding_map(workflow)
         tier_overrides = tier_overrides or {}
+        step_count = len(workflow.steps)
+        progress(RunProgress(RunPhase.RUN_STARTED, execution_id, step_count=step_count))
 
-        for step in workflow.steps:
-            if step.nature is StepNature.INTERPRETABLE:
-                if shot_config is None:
-                    # no shot configuration supplied -> stop honestly, do not fake it
-                    report.stopped_reason = (
-                        f"step '{step.id}' is a shot, but no client/model resolution was "
-                        "provided -- configure the step's tier in your [tiers] config."
-                    )
-                    self._store.emit(
-                        et.WorkflowExecutionFailed(reason=report.stopped_reason),
-                        execution_id=execution_id,
-                    )
-                    return report
-                if not self._run_shot(
-                    step, execution_id, context, bindings, report, shot_config, tier_overrides
-                ):
-                    self._store.emit(
-                        et.WorkflowExecutionFailed(reason=f"step '{step.id}' failed"),
-                        execution_id=execution_id,
-                    )
-                    report.failed_step = step.id
-                    return report
-                continue
-
-            if not self._run_step(step, execution_id, context, bindings, report):
+        for step_number, step in enumerate(workflow.steps, start=1):
+            if step.nature is StepNature.INTERPRETABLE and shot_config is None:
+                # no shot configuration supplied -> stop honestly, do not fake it
+                report.stopped_reason = (
+                    f"step '{step.id}' is a shot, but no client/model resolution was "
+                    "provided -- configure the step's tier in your [tiers] config."
+                )
                 self._store.emit(
-                    et.WorkflowExecutionFailed(reason=f"step '{step.id}' failed"),
+                    et.WorkflowExecutionFailed(reason=report.stopped_reason),
                     execution_id=execution_id,
                 )
-                report.failed_step = step.id
+                progress(
+                    RunProgress(RunPhase.RUN_FAILED, execution_id, reason=report.stopped_reason)
+                )
                 return report
+
+            progress(
+                RunProgress(
+                    RunPhase.STEP_STARTED,
+                    execution_id,
+                    step_name=step.id,
+                    step_number=step_number,
+                    step_count=step_count,
+                )
+            )
+            if step.nature is StepNature.INTERPRETABLE:
+                step_ok = self._run_shot(
+                    step, execution_id, context, bindings, report, shot_config, tier_overrides
+                )
+            else:
+                step_ok = self._run_step(step, execution_id, context, bindings, report)
+
+            if not step_ok:
+                reason = f"step '{step.id}' failed"
+                self._store.emit(
+                    et.WorkflowExecutionFailed(reason=reason), execution_id=execution_id
+                )
+                report.failed_step = step.id
+                progress(
+                    RunProgress(
+                        RunPhase.STEP_FAILED,
+                        execution_id,
+                        step_name=step.id,
+                        step_number=step_number,
+                        step_count=step_count,
+                    )
+                )
+                progress(RunProgress(RunPhase.RUN_FAILED, execution_id, reason=reason))
+                return report
+
+            progress(
+                RunProgress(
+                    RunPhase.STEP_COMPLETED,
+                    execution_id,
+                    step_name=step.id,
+                    step_number=step_number,
+                    step_count=step_count,
+                )
+            )
 
         self._store.emit(et.WorkflowExecutionCompleted(), execution_id=execution_id)
         report.completed = True
+        progress(RunProgress(RunPhase.RUN_COMPLETED, execution_id, step_count=step_count))
         return report
 
     def _run_step(self, step, execution_id, context, bindings, report) -> bool:
