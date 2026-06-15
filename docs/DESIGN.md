@@ -160,13 +160,24 @@ cacheable shots), smaller blast radius on change, and reuse across workflows.
 A **cap** carries both halves of what a judgment step needs: *who the model is*
 (persona + methodology) and *which slice of context the step reads* (binary bucket
 flags). A cap lives once and is referenced by name; a step wears zero, one, or two
-caps; an executable step wears none — and that absence is meaningful.
+caps; an executable step wears none — and that absence is meaningful. A cap is
+**generic** — a role, possibly inspired by real people but scrubbed to the role,
+carrying no user — and it ships and is shared unchanged. A cap either **plays** the
+user (stands in for them when absent) or **accompanies** them (the companion, §14);
+the full model is §16.
 
 **Rules** are compressed, interpretation-only guidance blocks — the system's
 memory of "we fixed this once." Rules bind to **caps, not steps**; a step inherits
 rules transitively through what it wears. Applicability is computed at compile
 time, cached by content hash, overridable per cell. (The applicability matrix and
 automatic rule proposal are roadmap items; the binding model is design now.)
+
+Rules are also the unit of the user's **projection** onto a cap (§16): the user
+reacts at a step, and the app — reading the cap's description — diagnoses and
+phrases the correction. Rules **never rewrite** the cap; they accrue as a separable
+layer (**seed rules** projected from the user's context snapshot, **app rules**
+accrued from live reactions), so the authored cap stays pristine and shareable.
+The separation plane is one line: **authored ships, accrued stays.**
 
 ## 7. The workflow context, ports, and bindings
 
@@ -217,6 +228,16 @@ output. Present → the run blocks and the app asks you at the prompt, recording
 the answer as an event; absent → proceed. There is no separate gate machinery. A
 step marked **unattended** never blocks: it proceeds (or fails) without asking,
 which is what makes fully auto-advancing workflows possible.
+
+**Personalizing a cap at warm-up.** The same warm-up offers, per cap a workflow
+uses, a three-way choice: run it **generic** (testing the workflow, not yourself),
+**project your context** onto it (the app extracts the role-relevant slice of your
+snapshot into seed rules — one interpretive shot through gmlcache, cached
+thereafter), or **play the role yourself** (you are present, so the step pauses for
+you — the per-role face of the run modes). The user's personal context is itself a
+**configuration requirement** satisfied per cap; the raw snapshot never transits a
+model call, only the derived rules do. The full model — projection, snapshot,
+"digital me" — is §16.
 
 ## 8. The request envelope and purity
 
@@ -422,6 +443,12 @@ nothing. Today people solve this with two screens — a chat in the browser for
 thinking, the coding client in a terminal for working. **The companion merges the
 two screens into the workspace**, while keeping their contexts strictly separate.
 
+In §16's terms the companion is itself a cap — of the **accompanying** nature:
+where a work cap *plays* the user, the companion talks *with* them and adapts,
+never replaces. It is the home of the personal-**personal** context (how you
+talk, the human level), while the personal-**professional** you lives on the
+playing caps; provenance routes each correction to the right home.
+
 - **An in-app surface, not a second process.** `/companion` shows the chat;
   hide it and you are back at the work prompt. (An earlier sketch ran it as a
   second terminal on the same on-disk session; superseded — the REPL makes that
@@ -498,14 +525,102 @@ Second, a transform never yet recorded can show *that* it will cost a call, but
 not its output size until that one run happens; afterwards the delta is exact
 and free forever.
 
-**Open question (deliberately undecided): the placement taxonomy.** When a user
-wants to correct how a judgment step behaves, the fix has three legitimate
-homes — the **cap** (every step wearing it benefits), a **user rule** (it is
-about this user and follows them everywhere), or the **step's own context**
-(local to one judgment). The choice is the user's; the app's job is to make the
-question askable. The taxonomy and its ergonomics are not yet designed.
+**The placement taxonomy (resolved 2026-06-15).** A correction to a judgment step
+has one home: a **rule on a cap** (§6, §16). The earlier "user rule" is not a
+separate home — it is a rule on the *user-cap*, a "digital me" being a cap like
+any other (§16). A correction that must *not* generalize to every step wearing the
+cap is not a rule at all but a **per-binding tweak** on that step's use (the
+layered-config override; see ROADMAP design-notes), kept distinct from the cap's
+accrued rules. The app routes a reaction to the right cap by reading the cap's
+description; the user is not asked to sort it.
 
-## 16. Design invariants — do not re-litigate
+**Stale rules on a changed snapshot.** Seed rules derive from the user's context
+snapshot (§16); editing the snapshot is a cache-invalidation event. The app
+detects the rules a change touches and **surfaces** them with before/after for the
+user to keep, revise, or drop — never a silent recompute, the same eyeball-first
+posture the exact-policy buckets keep.
+
+## 16. The user, the context snapshot, and projection
+
+A cap is generic by construction (§6): a role — persona + methodology — perhaps
+inspired by real people but **scrubbed to the role**, carrying no user. What
+makes a run *yours* is not a different cap but a **projection** cast onto it.
+This section states the model the rest of the document points at; §6 (caps and
+rules), §7 (context), and §14 (the companion) each see one face of it.
+
+**Two natures of cap.** A cap either **plays** the user or **accompanies** them.
+A *playing* cap stands in for the user where the user is absent — it produces
+work *in their place* (the engineer cap writes code as you, judged by "would I
+have written this?"). The *companion* (§14) is an *accompanying* cap: it talks
+*with* the present user and adapts to them, and never replaces them. Same
+primitive, opposite relation to the user. A third posture lives at the edges —
+**elicitation**, where the user is the live source and the cap only draws them
+out (a CV-builder interviewing you); whether that is a sub-kind of accompaniment
+or its own nature is left open.
+
+**"Digital me" is a bound result, never a shipped thing.** It is what a generic
+*playing* cap becomes once the user's projection is layered onto it, locally —
+never authored, never exported. When the user is *present* in the loop —
+answering, deciding, pouring experience in — there is nothing to stand in for,
+and the cap reverts to generic or to elicitation. A digital-me is a stand-in for
+the user's **absence**.
+
+**A rule is a projection onto a cap.** Rules (§6) are the projection's unit: a
+compressed, interpretation-only correction the user casts onto a cap — "have
+this role behave thus." Rules accrue on the cap and **never rewrite** its base
+definition; the generic cap underneath stays pristine, which is exactly what
+keeps it shareable. Two origins feed the one accrued layer: **seed rules**,
+projected from the user's context snapshot at warm-up, and **app rules**, accrued
+from the user's live reactions during runs. Both sit atop the authored cap. This
+is the single separation plane — **authored ships, accrued stays**.
+
+**The cap description is a dual-purpose contract.** Because both projection and
+rule-identification read it, a cap's description must be written specifically
+enough to serve both: the app reads it to *diagnose and phrase a rule* when the
+user reacts at a step wearing the cap, and the user's context is *projected onto
+it*. The user never has to know which cap, or how to phrase the rule — the app
+does that work from the description.
+
+**Personal context is a snapshot, not a living self.** The CV, journal pages, an
+AI-written self-description — each is a fixed-in-time image of how the user saw
+themselves, or was seen by another actor (human or AI). The application **never
+edits** it; only the user adds, updates, or removes. It is the *seed*, not the
+growth: the living representation of the user is the accruing rules, not the
+static file.
+
+**Raw context never reaches the model.** The snapshot is the *source* from which
+projectable rules are derived; the **rules**, compressed, are what a cap carries
+into a call — never the raw CV. This keeps personal data out of model calls (save
+the one deliberate, consented extraction shot) and keeps the companion's many
+turns cheap, since a heavy profile is never re-sent.
+
+**Provenance classifies the personal.** What a *playing* cap's observer catches is
+personal-**professional** (how you work) and lands on that cap; what the
+**companion** catches is personal-**personal** (how you talk, the human level) and
+lands on the companion. Who captured a correction decides where it belongs; the
+user is not asked to sort it.
+
+**An artifact's role is workflow-relative.** The same CV is *context* in a
+workflow that plays you and *raw input* in the workflow whose job is to rebuild
+it. Ingest only *structures* an upload; **binding** (§7) assigns its role, per
+workflow — nothing is classified once and globally.
+
+**Adaptation is the default; opting out is a setting.** By default the system
+learns the user — seeds and accrues. A profile switch ("stay generic, never
+adapt") mutes both; a user who sets it will rarely supply context anyway, so the
+tension is self-resolving.
+
+**New cap, existing user — an offer, not an assumption.** When a workflow
+introduces an unmet cap, warm-up *offers* to project the user's existing
+rules/context onto it, matched by description, exposing overlaps and conflicts to
+curate — never a silent bind.
+
+**Editing the snapshot is a cache-invalidation event.** Rules seeded from a
+snapshot become possibly-stale when the snapshot changes; the app **detects and
+surfaces** them with before/after, and leaves the decision to the user. It never
+silently recomputes.
+
+## 17. Design invariants — do not re-litigate
 
 1. The REPL is this project's product; there is no argument-driven human usage
    model. The core is **surface-agnostic**: no capability exists only as REPL
@@ -543,3 +658,12 @@ question askable. The taxonomy and its ergonomics are not yet designed.
     with each event and rebuildable from the log plus git. Events reference
     meta-code by name + commit, never by database id. Event types are an
     engine-owned closed enum with typed, self-describing payloads.
+19. Caps are generic and carry no user; a "digital me" is the generic cap with the
+    user's projection bound at runtime — never authored, never exported.
+20. A cap's base is never mutated by use; the sole accrual is rules — seed (from the
+    snapshot) and app (from reactions) — one separable layer where authored ships and
+    accrued stays.
+21. The user's raw context snapshot never transits a model call; only the compressed
+    rules derived from it do, and only the user ever edits the snapshot.
+22. Adaptation — seeding and rule accrual — is the default; a single profile switch
+    ("stay generic") mutes it.
