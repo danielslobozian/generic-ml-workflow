@@ -138,7 +138,7 @@ technology.
 
 1. **User-supplied executable.** A bash script, a binary, anything launchable. The
    step config declares the invocation, the inputs, the outputs, optionally a
-   credential role. No spec, no interpretation, no generation — if you already have
+   provider it needs. No spec, no interpretation, no generation — if you already have
    the thing, the engine does not force you to reinvent it through a spec.
 2. **Generated body.** Creation-mode (an ML-assisted compiler, later on the
    roadmap) analyzes a spec and, where the work is deterministic, generates a
@@ -188,7 +188,7 @@ materialized input and every durable output a step produces lands in the context
 under a unique name as the run advances. A step never consumes "another step's
 output" — it asks the context, and resolution is uniform whether the value came
 from the launch, from configuration, or from a step that ran earlier. (The
-context holds a credential role's *presence*, never the token — secrets keep
+context holds a provider's *presence*, never the token — secrets keep
 their separate path, §10.)
 
 **Steps declare requirements, in kinds.** A requirement is one of: a
@@ -196,7 +196,7 @@ their separate path, §10.)
 the steps' unsatisfied run-inputs; adding a step extends the interview
 automatically), a **configuration requirement** (satisfied from the user's
 config — set once, shared by every workflow that reuses the step), a
-**credential role** (§10), or an **artifact** (a named product some earlier step
+**provider** (§10), or an **artifact** (a named product some earlier step
 must contribute).
 
 **Ports and bindings.** A step's declared inputs and outputs are **local names —
@@ -299,20 +299,50 @@ read paths — mechanisms `gmlcache` provides natively (`--input-file`,
 - **The currency is tokens and usage, not dollars.** Subscription cost is flat;
   dollars exist only on api-key paths. No pricing scraper, ever.
 
-## 10. Credentials
+## 10. Providers
 
-- Named **roles** in config (`base_url` etc.); tokens live in a separate
-  `credentials.toml` (chmod 600, never in config, never versioned, never leaves
-  the machine). Env-var override per role for single runs.
-- **Secrets never transit a model call.** A role token can reach only the
-  executable side: a built-in or generated body uses `ctx.fetch(role, path)` — the
-  token never enters step code at all, and the host is pinned by the role's
-  `base_url`; a user-supplied executable that declares `needs: [role]` receives the
-  token as an env var in its process — a wider grant, but it is the user's own
-  script, explicitly declared. In all cases the token never appears in events,
-  logs, prompts, context, or cassettes. The interpretable side cannot receive a
-  token, by construction. Deterministic local steps exist partly *for* this:
-  fetch-the-data locally, send only the data onward.
+A **provider** is a named external dependency a step needs in order to work — an
+issue tracker, a database, a file source. It is *not* a behavioural choice (those
+are settings, layered profile→workflow→step); it is a *need*: "to do my job I must
+reach this outside thing." Connections are one species of provider, but a provider
+need not be networked — it can be a local client or file source — so it is named for
+what it is, not for "connection."
+
+- **Description is meta-code; values are data.** A provider's *description* — its
+  **kind** (e.g. `issue_tracker`) and its **property schema** (each property on the
+  **config** plane or the **credential** plane, with a type, a human description, and
+  a rationale) — lives in meta-code, one file per provider alongside steps and
+  workflows, referenced by name + commit. The source never holds values, only the
+  schema. The *values* are the user's **data**: the config plane in config, the
+  credential plane (tokens) in a separate `credentials.toml` (chmod 600, never in
+  config, never versioned, never leaves the machine).
+- **Instances (aliases).** A configured set of values for a provider is an instance,
+  named by an alias (`jira/acme`, `jira/other`), with one default. Defined once,
+  reused. The same provider can have many instances; the credential plane of an
+  instance is a *reference* resolved from `credentials.toml` at run time, so an
+  instance is config-data plus a pointer to a local secret — it never carries a token
+  as data.
+- **Step declares the kind; the workflow binds the instance.** A step declares it
+  needs a provider of a kind ("I need an `issue_tracker`") and stays instance-
+  agnostic, so it is reusable; placing the step in a workflow binds it to a specific
+  instance (or the kind's default). Many steps may bind the same instance; the same
+  step in two workflows may bind different instances — both live independently.
+- **Verified token-free, before any token is spent.** At `/validate` and at run
+  start the engine walks each step's provider need and its bound instance and checks
+  the config + credentials satisfy that provider's schema — failing loud and specific
+  ("step X needs the `jira` issue-tracker; its `base_url` isn't in config / its token
+  isn't in `credentials.toml`"). The schema being meta-code is what lets the error
+  name the missing property in plain terms. An env-var override per instance is
+  allowed for single runs.
+- **Secrets never transit a model call.** A token reaches only the executable side: a
+  built-in or generated body uses `ctx.fetch(provider, path)` — the token never
+  enters step code at all, and the host is pinned by the instance's `base_url`; a
+  user-supplied executable that declares `needs: [provider]` receives the token as an
+  env var in its process — a wider grant, but it is the user's own script, explicitly
+  declared. In all cases the token never appears in events, logs, prompts, context, or
+  cassettes. The interpretable side cannot receive a token, by construction.
+  Deterministic local steps exist partly *for* this: fetch-the-data locally, send only
+  the data onward.
 
 ## 11. The event log — the persistence architecture
 

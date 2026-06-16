@@ -20,9 +20,11 @@ worker while the prompt stays live, picks a mode at launch (full-auto / full-man
 checkpointing / questions-only), can be **stopped** cleanly (the teardown cascades
 into gmlcache) and **resumed** from its own event log, and the **questions gate**
 lets a step ask, block, take the user's answers, and feed them into later steps.
-0.0.1–0.0.8 are published; next up: **0.0.9 — credentials and roles** (a credential
-role declared by a step, satisfied at launch, with the token never transiting a
-model call — the handling sinks toward gmlcache).
+0.0.1–0.0.8 are published; next up: **0.0.9 — providers** (a provider — a named
+external dependency like an issue tracker — declared by a step, bound to a
+configured instance per workflow, satisfied at launch with the token never transiting a
+model call — provider handling is engine-side, the cache's only stake is keeping
+secrets out of recorded calls).
 
 ---
 
@@ -237,14 +239,26 @@ The app exists, installs, launches, and is honest about what it can't do yet.
   the prompt responsive; stop at a boundary; stop mid-step cascades and records the
   step interrupted; resume rebuilds the execution context from the projections.
 
-### 0.0.9 — credentials and roles
-- Role config + separate `credentials.toml` (chmod 600, enforced), env-var
-  override per role; `needs: [role]` → env injection for user-supplied
-  executables; the never-in-events/logs/prompts/cassettes guarantee, tested.
-- A built-in `fetch` body using `ctx.fetch(role, path)` (host pinned by the
-  role's `base_url`; token never enters step code).
-- **Tests:** chmod enforcement; fail-clean per missing role; redaction
-  everywhere; host-pinning (a path cannot escape the base_url).
+### 0.0.9 — providers
+- A **provider** is a named external dependency (issue tracker, database, file
+  source) a step needs. Its description — kind + property schema, each property on
+  the **config** or **credential** plane — is meta-code, one file per provider
+  (alongside steps/workflows). Its values are data: config plane in config, tokens in
+  a separate `credentials.toml` (chmod 600, enforced; never versioned; never leaves
+  the machine), with an env-var override per instance.
+- **Instances (aliases):** a configured value-set for a provider (`jira/acme`), one
+  default; the credential plane is a reference resolved locally at run time, never
+  carried as data. A step declares the **kind** it needs; the workflow binds the
+  **instance**; many steps may share one instance and one step may bind different
+  instances across workflows.
+- Token-free validation at `/validate` and run start: walk each step's provider need
+  + bound instance, check config + credentials satisfy the schema, fail loud and
+  specific. The never-in-events/logs/prompts/context/cassettes guarantee, tested.
+- `needs: [provider]` → env injection for user-supplied executables; a built-in
+  `fetch` body using `ctx.fetch(provider, path)` (host pinned by the instance's
+  `base_url`; token never enters step code).
+- **Tests:** chmod enforcement; fail-clean per missing provider config/credential;
+  redaction everywhere; host-pinning (a path cannot escape the base_url).
 
 ### 0.0.10 — cost
 - `/cost`: per step / per execution / per job, in tokens + usage units.
