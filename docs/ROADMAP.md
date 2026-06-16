@@ -245,7 +245,7 @@ The app exists, installs, launches, and is honest about what it can't do yet.
   the **config** or **credential** plane — is meta-code, one file per provider
   (alongside steps/workflows). Its values are data: config plane in config, tokens in
   a separate `credentials.toml` (chmod 600, enforced; never versioned; never leaves
-  the machine), with an env-var override per instance.
+  the machine).
 - **Instances (aliases):** a configured value-set for a provider (`jira/acme`), one
   default; the credential plane is a reference resolved locally at run time, never
   carried as data. A step declares the **kind** it needs; the workflow binds the

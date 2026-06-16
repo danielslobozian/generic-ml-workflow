@@ -27,6 +27,7 @@ shape, raises :class:`ConfigError` with the path and the reason.
 from __future__ import annotations
 
 import os
+import sys
 import re
 import tomllib
 from dataclasses import dataclass
@@ -297,6 +298,21 @@ def set_value(cfg_path: Path, setting: str, value: str) -> None:
     cfg_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+def _ensure_private(path: Path) -> None:
+    """Refuse to read a secrets file that others can see. On POSIX the credentials
+    file must be mode 600 (owner-only); any group/other permission bit is rejected
+    rather than read, so a token can't sit in a world-readable file. A no-op on
+    Windows, which has no POSIX permission bits."""
+    if sys.platform == "win32":
+        return
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise ConfigError(
+            f"{path}: credentials file is readable by group/other (mode {mode:03o}); "
+            "run 'chmod 600' on it -- secrets must be owner-only"
+        )
+
+
 def load_providers(
     config_file: Path | None = None,
     credentials_file: Path | None = None,
@@ -317,9 +333,10 @@ def load_providers(
     bindings = bindings or {}
     cfg_path = config_file if config_file is not None else paths_mod.config_path()
     config_doc = _read_file(cfg_path) if cfg_path.is_file() else {}
-    creds_doc = (
-        _read_file(credentials_file) if credentials_file and credentials_file.is_file() else {}
-    )
+    creds_doc: dict = {}
+    if credentials_file and credentials_file.is_file():
+        _ensure_private(credentials_file)
+        creds_doc = _read_file(credentials_file)
 
     def kinds_of(doc: dict) -> dict:
         raw = doc.get("providers")

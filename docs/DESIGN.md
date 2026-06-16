@@ -332,8 +332,8 @@ what it is, not for "connection."
   the config + credentials satisfy that provider's schema — failing loud and specific
   ("step X needs the `jira` issue-tracker; its `base_url` isn't in config / its token
   isn't in `credentials.toml`"). The schema being meta-code is what lets the error
-  name the missing property in plain terms. An env-var override per instance is
-  allowed for single runs.
+  name the missing property in plain terms. The `credentials.toml` must be private
+  (mode 600); a group- or world-readable secrets file is refused, not read.
 - **Secrets never transit a model call.** A token reaches only the executable side: a
   built-in or generated body uses `ctx.fetch(provider, path)` — the token never
   enters step code at all, and the host is pinned by the instance's `base_url`; a

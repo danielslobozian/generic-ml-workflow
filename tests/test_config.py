@@ -3,6 +3,8 @@
 """The config resolver: precedence, source tracking, the documented template,
 and in-place single-key updates."""
 
+import os
+import sys
 import tomllib
 from pathlib import Path
 
@@ -185,6 +187,7 @@ def test_load_providers_merges_config_and_credential_planes(tmp_path):
     )
     creds = tmp_path / "credentials.toml"
     creds.write_text('[providers.issue_tracker.jira]\ntoken = "secret-xyz"\n', encoding="utf-8")
+    os.chmod(creds, 0o600)
 
     instances, kinds = config.load_providers(cfg, creds)
     assert kinds == {"issue_tracker"}
@@ -213,6 +216,7 @@ def test_load_providers_binding_selects_the_alias(tmp_path):
         '[providers.issue_tracker.other]\ntoken = "o"\n',
         encoding="utf-8",
     )
+    os.chmod(creds, 0o600)
     inst, _ = config.load_providers(cfg, creds, bindings={"issue_tracker": "other"})
     assert inst["issue_tracker"]["base_url"] == "https://other"
     assert inst["issue_tracker"]["token"] == "o"
@@ -223,3 +227,19 @@ def test_load_providers_binding_to_unknown_alias_raises(tmp_path):
     cfg.write_text('[providers.issue_tracker.acme]\nbase_url = "x"\n', encoding="utf-8")
     with pytest.raises(config.ConfigError, match="no such instance"):
         config.load_providers(cfg, None, bindings={"issue_tracker": "ghost"})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_load_providers_refuses_a_world_readable_credentials_file(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[providers.issue_tracker.default]\nbase_url = "x"\n', encoding="utf-8")
+    creds = tmp_path / "credentials.toml"
+    creds.write_text('[providers.issue_tracker.default]\ntoken = "t"\n', encoding="utf-8")
+
+    os.chmod(creds, 0o644)
+    with pytest.raises(config.ConfigError, match="owner-only|chmod 600"):
+        config.load_providers(cfg, creds)
+
+    os.chmod(creds, 0o600)
+    inst, kinds = config.load_providers(cfg, creds)
+    assert inst["issue_tracker"]["token"] == "t"

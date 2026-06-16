@@ -48,6 +48,11 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   resource under the configured base, never another host and never a climb above the
   base path (an escaping path fails the step). (`builtin_bodies` with `pin_url`;
   `run_executable` dispatches built-in bodies; the orchestrator hands it the instance.)
+- **Providers — credentials-file privacy enforced.** On POSIX, `load_providers`
+  refuses to read a `credentials.toml` that is group- or world-readable (any bit
+  outside owner), telling the user to `chmod 600` it, so a token can't sit in a file
+  others can see (no-op on Windows). The previously-mentioned per-instance env-var
+  override was dropped from scope.
 
 ## [0.0.8] - 2026-06-16
 
