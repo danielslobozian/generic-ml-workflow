@@ -53,6 +53,12 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   outside owner), telling the user to `chmod 600` it, so a token can't sit in a file
   others can see (no-op on Windows). The previously-mentioned per-instance env-var
   override was dropped from scope.
+- **Providers — the guarantee test suite.** Beyond the per-feature checks (host-pinning
+  on the built-in fetch, fail-clean naming each missing property, no token in event
+  payloads), a comprehensive test asserts a provider token appears nowhere in a full
+  text image of the entire persisted store — events, executions, gate, and jobs
+  tables — which also covers the prompt side, since a prompt can only draw from
+  recorded context products.
 
 ## [0.0.8] - 2026-06-16
 

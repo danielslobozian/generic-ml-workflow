@@ -996,3 +996,40 @@ def test_builtin_fetch_refuses_a_path_that_escapes_the_host(tmp_path):
         provider_instances={"issue_tracker": {"base_url": "https://acme.test/api", "token": "t"}},
     )
     assert not report.completed
+
+
+# --- 0.0.9 item 5: the comprehensive redaction guarantee -- token nowhere persisted
+
+
+def test_provider_token_is_absent_from_the_entire_persisted_store(tmp_path, monkeypatch):
+    """Stronger than the per-feature event-log checks: a full text image of every
+    table (events, executions, gate, jobs) must not contain the token. A prompt can
+    only ever draw from recorded context products, so 'nowhere in the store' also
+    covers the prompt side (shots never receive a provider instance by construction)."""
+    from generic_ml_workflow.core import builtin_bodies as bb
+
+    monkeypatch.setattr(bb, "_http_get", lambda url, token: b"DATA")
+    store = EventStore(":memory:")
+    step = StepSpec(
+        id="pull",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="builtin:fetch",
+        inputs=(
+            InputPort("issue_tracker", Requirement.PROVIDER),
+            InputPort("path", Requirement.RUN_INPUT),
+        ),
+        outputs=(_out("body", "body.json"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {"path": "issues/1"},
+        STAMP,
+        providers={"issue_tracker"},
+        provider_instances={
+            "issue_tracker": {"base_url": "https://acme.test", "token": "secret-xyz"}
+        },
+    )
+    assert report.completed
+    whole_store = "\n".join(store._conn.iterdump())
+    assert "secret-xyz" not in whole_store
