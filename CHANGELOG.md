@@ -26,6 +26,13 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   context, events, logs, prompts, or cassettes (covered by a never-leaks test).
   Per-workflow alias binding, `ctx.fetch` host-pinning, and chmod enforcement remain
   for later slices.
+- **Providers — self-describing schema.** A provider can now carry a description
+  (meta-code, one YAML per provider in `flows/providers/`): its kind plus a list of
+  properties, each tagged `config` or `credential`, with a human description.
+  Validation became property-specific — instead of "issue_tracker isn't configured"
+  it now says "your instance is missing token (credential)", naming each absent
+  required property on the right plane. (`discover_providers`, `load_provider`,
+  `ProviderSpec`/`ProviderProperty`; warm-up consults the schema when one exists.)
 
 ## [0.0.8] - 2026-06-16
 

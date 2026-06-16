@@ -164,6 +164,44 @@ class StepSpec:
             raise WorkflowError(f"step '{self.id}' declares more than one questions output")
 
 
+class ProviderPlane(str, Enum):
+    """Which plane a provider property lives on: ordinary config, or a secret."""
+
+    CONFIG = "config"
+    CREDENTIAL = "credential"
+
+
+@dataclass(frozen=True)
+class ProviderProperty:
+    """One declared field of a provider: its name, which plane it lives on (config
+    vs credential/secret), a human description, and whether it is required."""
+
+    name: str
+    plane: ProviderPlane
+    description: str = ""
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """A provider's self-describing shape -- its kind (e.g. ``issue_tracker``) and the
+    properties an instance must supply. Meta-code: one file per provider, no values.
+    The schema is what turns 'issue_tracker isn't configured' into 'your instance is
+    missing base_url (config)', and is what a setup interview/UI reads (DESIGN.md §10)."""
+
+    kind: str
+    properties: tuple[ProviderProperty, ...] = ()
+
+    def unmet(self, instance: dict[str, object]) -> list[str]:
+        """The required properties absent from a configured ``instance`` (a flat
+        key->value map merged across both planes), each as 'name (plane)'."""
+        return [
+            f"{p.name} ({p.plane.value})"
+            for p in self.properties
+            if p.required and p.name not in instance
+        ]
+
+
 @dataclass(frozen=True)
 class Binding:
     """Wires one consuming artifact port to a context product name. Lives on the

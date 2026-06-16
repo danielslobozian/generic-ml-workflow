@@ -592,6 +592,7 @@ class Repl:
         provider_instances, provider_kinds = config.load_providers(
             self.settings.config_file, self.settings.state_dir / "credentials.toml"
         )
+        provider_specs = discovery.discover_providers(self.settings.flows_dir)
         if overrides:
             for step_id, tier in overrides.items():
                 self._write(f"  tier override: {step_id} -> {tier.value}")
@@ -620,6 +621,7 @@ class Repl:
                 mode=mode,
                 providers=provider_kinds,
                 provider_instances=provider_instances,
+                provider_specs=provider_specs,
                 progress=progress,
                 stop=stop,
             )

@@ -17,6 +17,9 @@ from generic_ml_workflow.core.contract import (
     Lifespan,
     OutputKind,
     OutputPort,
+    ProviderPlane,
+    ProviderProperty,
+    ProviderSpec,
     Requirement,
     StepNature,
     StepSpec,
@@ -876,3 +879,48 @@ def test_provider_instance_is_injected_and_token_does_not_leak(tmp_path):
     # ... but its value is nowhere in the recorded event log
     log_blob = " ".join(str(e.payload.__dict__) for e in store.replay(report.execution_id))
     assert "secret-xyz" not in log_blob
+
+
+# --- 0.0.9 item 1: a provider schema makes validation property-specific
+
+
+def _tracker_spec():
+    return ProviderSpec(
+        kind="issue_tracker",
+        properties=(
+            ProviderProperty("base_url", ProviderPlane.CONFIG, "API base URL"),
+            ProviderProperty("token", ProviderPlane.CREDENTIAL, "API token"),
+        ),
+    )
+
+
+def _wf_needing_tracker():
+    step = StepSpec(
+        id="fetch",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="fetch.sh",
+        inputs=(InputPort("issue_tracker", Requirement.PROVIDER),),
+    )
+    return Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+
+
+def test_warm_up_names_the_specific_missing_provider_property():
+    wf = _wf_needing_tracker()
+    specs = {"issue_tracker": _tracker_spec()}
+    # the kind is configured, but the instance lacks the credential-plane token
+    with pytest.raises(OrchestratorError, match=r"missing token \(credential\)"):
+        warm_up(
+            wf,
+            {},
+            providers={"issue_tracker"},
+            provider_specs=specs,
+            provider_instances={"issue_tracker": {"base_url": "https://acme.test"}},
+        )
+    # a complete instance satisfies the schema
+    warm_up(
+        wf,
+        {},
+        providers={"issue_tracker"},
+        provider_specs=specs,
+        provider_instances={"issue_tracker": {"base_url": "https://acme.test", "token": "t"}},
+    )

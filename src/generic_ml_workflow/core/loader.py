@@ -44,6 +44,9 @@ from generic_ml_workflow.core.contract import (
     Lifespan,
     OutputKind,
     OutputPort,
+    ProviderPlane,
+    ProviderProperty,
+    ProviderSpec,
     Requirement,
     StepNature,
     StepSpec,
@@ -144,3 +147,52 @@ def _binding(path: Path, b: dict) -> Binding:
         port=_require(path, b, "port", "a binding"),
         product=_require(path, b, "product", "a binding"),
     )
+
+
+def load_provider(path: str | Path) -> ProviderSpec:
+    """Parse a provider description (meta-code YAML) into a :class:`ProviderSpec`.
+
+    Shape::
+
+        kind: issue_tracker
+        properties:
+          - {name: base_url, plane: config, description: "API base URL"}
+          - {name: token, plane: credential, description: "API token"}
+
+    Holds only the schema, never values. Raises ``WorkflowError`` on any malformed
+    field, named with the file."""
+    path = Path(path)
+    try:
+        with path.open("rb") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise WorkflowError(f"{path.name}: cannot read provider description: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise WorkflowError(f"{path.name}: provider description must be a mapping")
+    kind = doc.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        raise WorkflowError(f"{path.name}: provider description needs a non-empty 'kind'")
+    raw_props = doc.get("properties", [])
+    if not isinstance(raw_props, list):
+        raise WorkflowError(f"{path.name}: 'properties' must be a list")
+    props: list[ProviderProperty] = []
+    for entry in raw_props:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise WorkflowError(f"{path.name}: each property needs a 'name'")
+        plane_raw = entry.get("plane")
+        try:
+            plane = ProviderPlane(plane_raw)
+        except ValueError:
+            raise WorkflowError(
+                f"{path.name}: property '{entry['name']}' has invalid plane {plane_raw!r} "
+                "(use 'config' or 'credential')"
+            ) from None
+        props.append(
+            ProviderProperty(
+                name=entry["name"],
+                plane=plane,
+                description=str(entry.get("description", "")),
+                required=bool(entry.get("required", True)),
+            )
+        )
+    return ProviderSpec(kind=kind, properties=tuple(props))

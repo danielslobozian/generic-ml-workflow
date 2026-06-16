@@ -153,17 +153,22 @@ def warm_up(
     config_values: dict[str, str] | None = None,
     credentials: set[str] | None = None,
     providers: set[str] | None = None,
+    provider_specs: dict | None = None,
+    provider_instances: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Token-free readiness check before step one fires (DESIGN.md SS7).
 
     Every computed run-input must be supplied; every configuration requirement must
     be satisfiable from config; every credential role must be present; every provider
-    a step needs must resolve to a configured instance. Raises ``OrchestratorError``
-    listing what is missing, before any execution opens.
+    a step needs must resolve to a configured instance that satisfies the provider's
+    schema. Raises ``OrchestratorError`` listing what is missing, before any execution
+    opens.
     """
     config_values = config_values or {}
     credentials = credentials or set()
     providers = providers or set()
+    provider_specs = provider_specs or {}
+    provider_instances = provider_instances or {}
     missing: list[str] = []
     for name in workflow.run_inputs():
         if name not in run_inputs:
@@ -180,6 +185,11 @@ def warm_up(
                 f"provider '{kind}' is required but no instance is configured "
                 "(set it up in config + credentials)"
             )
+            continue
+        spec = provider_specs.get(kind)
+        if spec is not None:
+            for unmet in spec.unmet(provider_instances.get(kind, {})):
+                missing.append(f"provider '{kind}' instance is missing {unmet}")
     if missing:
         raise OrchestratorError("this workflow is not ready to run:\n  " + "\n  ".join(missing))
 
@@ -203,6 +213,7 @@ class Orchestrator:
         credentials: set[str] | None = None,
         providers: set[str] | None = None,
         provider_instances: dict[str, dict[str, str]] | None = None,
+        provider_specs: dict | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode = RunMode.FULL_AUTO,
@@ -218,7 +229,15 @@ class Orchestrator:
                 + "\n  ".join(result.errors)
             )
         # gate: requirements ready, token-free, before opening the execution
-        warm_up(workflow, run_inputs, config_values, credentials, providers)
+        warm_up(
+            workflow,
+            run_inputs,
+            config_values,
+            credentials,
+            providers,
+            provider_specs,
+            self._provider_instances,
+        )
 
         execution_id = new_execution_id()
         self._store.emit(

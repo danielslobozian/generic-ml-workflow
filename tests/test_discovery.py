@@ -37,3 +37,24 @@ def test_ignores_non_yaml(tmp_path):
     (tmp_path / "notes.txt").write_text("hi", encoding="utf-8")
     (tmp_path / ".git").mkdir()
     assert discovery.discover_workflows(tmp_path) == []
+
+
+def test_discover_providers_reads_descriptions_by_kind(tmp_path):
+    pdir = tmp_path / "providers"
+    pdir.mkdir()
+    (pdir / "jira.yaml").write_text(
+        "kind: issue_tracker\n"
+        "properties:\n"
+        "  - {name: base_url, plane: config, description: API base}\n"
+        "  - {name: token, plane: credential, description: API token}\n",
+        encoding="utf-8",
+    )
+    specs = discovery.discover_providers(tmp_path)
+    assert set(specs) == {"issue_tracker"}
+    spec = specs["issue_tracker"]
+    assert [p.name for p in spec.properties] == ["base_url", "token"]
+    assert spec.unmet({"base_url": "x"}) == ["token (credential)"]
+
+
+def test_discover_providers_empty_without_folder(tmp_path):
+    assert discovery.discover_providers(tmp_path) == {}

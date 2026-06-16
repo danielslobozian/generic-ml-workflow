@@ -13,8 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from generic_ml_workflow.core.contract import Workflow, WorkflowError
-from generic_ml_workflow.core.loader import load_workflow
+from generic_ml_workflow.core.contract import ProviderSpec, Workflow, WorkflowError
+from generic_ml_workflow.core.loader import load_provider, load_workflow
 
 
 @dataclass(frozen=True)
@@ -45,3 +45,23 @@ def discover_workflows(flows_dir: Path) -> list[Discovered]:
         except WorkflowError as exc:
             found.append(Discovered(path=path, workflow=None, error=str(exc)))
     return found
+
+
+def discover_providers(flows_dir: Path) -> dict[str, ProviderSpec]:
+    """Load provider descriptions from ``flows_dir/providers`` (one YAML per
+    provider), keyed by kind. Meta-code, alongside the workflows. Missing folder ->
+    empty map. A malformed description raises ``WorkflowError`` named with the file
+    (unlike workflow discovery, a provider schema must be sound to be trusted for
+    validation), and a duplicate kind is rejected."""
+    providers_dir = flows_dir / "providers"
+    if not providers_dir.is_dir():
+        return {}
+    specs: dict[str, ProviderSpec] = {}
+    for path in sorted(providers_dir.iterdir()):
+        if path.suffix.lower() not in (".yaml", ".yml") or not path.is_file():
+            continue
+        spec = load_provider(path)
+        if spec.kind in specs:
+            raise WorkflowError(f"{path.name}: provider kind '{spec.kind}' is already defined")
+        specs[spec.kind] = spec
+    return specs
