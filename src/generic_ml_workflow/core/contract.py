@@ -85,6 +85,7 @@ class Requirement(str, Enum):
     CREDENTIAL = "credential"  # a credential role (presence only; never the token)
     ARTIFACT = "artifact"  # a named product an earlier step must contribute
     ANSWER = "answer"  # a gate answer, by question id (filled mid-run, not at launch)
+    PROVIDER = "provider"  # a named external dependency (issue tracker, db); see §10
 
 
 class Lifespan(str, Enum):
@@ -216,6 +217,17 @@ class Workflow:
         seen: list[str] = []
         for s in self.steps:
             for name in s.required(Requirement.CREDENTIAL):
+                if name not in seen:
+                    seen.append(name)
+        return tuple(seen)
+
+    def provider_requirements(self) -> tuple[str, ...]:
+        """The provider kinds this workflow needs -- the union of its steps' declared
+        provider ports (e.g. 'issue_tracker'). Each must resolve to a configured
+        instance before the run may open (§10)."""
+        seen: list[str] = []
+        for s in self.steps:
+            for name in s.required(Requirement.PROVIDER):
                 if name not in seen:
                     seen.append(name)
         return tuple(seen)

@@ -152,15 +152,18 @@ def warm_up(
     run_inputs: dict[str, str],
     config_values: dict[str, str] | None = None,
     credentials: set[str] | None = None,
+    providers: set[str] | None = None,
 ) -> None:
     """Token-free readiness check before step one fires (DESIGN.md SS7).
 
     Every computed run-input must be supplied; every configuration requirement must
-    be satisfiable from config; every credential role must be present. Raises
-    ``OrchestratorError`` listing what is missing, before any execution opens.
+    be satisfiable from config; every credential role must be present; every provider
+    a step needs must resolve to a configured instance. Raises ``OrchestratorError``
+    listing what is missing, before any execution opens.
     """
     config_values = config_values or {}
     credentials = credentials or set()
+    providers = providers or set()
     missing: list[str] = []
     for name in workflow.run_inputs():
         if name not in run_inputs:
@@ -171,6 +174,12 @@ def warm_up(
     for role in workflow.credential_roles():
         if role not in credentials:
             missing.append(f"credential role '{role}' is required but not configured")
+    for kind in workflow.provider_requirements():
+        if kind not in providers:
+            missing.append(
+                f"provider '{kind}' is required but no instance is configured "
+                "(set it up in config + credentials)"
+            )
     if missing:
         raise OrchestratorError("this workflow is not ready to run:\n  " + "\n  ".join(missing))
 
@@ -191,6 +200,7 @@ class Orchestrator:
         job_id: str | None = None,
         config_values: dict[str, str] | None = None,
         credentials: set[str] | None = None,
+        providers: set[str] | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode = RunMode.FULL_AUTO,
@@ -205,7 +215,7 @@ class Orchestrator:
                 + "\n  ".join(result.errors)
             )
         # gate: requirements ready, token-free, before opening the execution
-        warm_up(workflow, run_inputs, config_values, credentials)
+        warm_up(workflow, run_inputs, config_values, credentials, providers)
 
         execution_id = new_execution_id()
         self._store.emit(

@@ -811,3 +811,22 @@ def test_answer_feeds_back_and_a_later_step_consumes_it(tmp_path):
     ]
     applied = next(e for e in artifacts if e.payload.name == "applied")
     assert Path(applied.payload.path).read_text().strip() == "tone=formal"
+
+
+# --- 0.0.9 (foundation): a step declares a provider; warm-up validates it's set up
+
+
+def test_warm_up_requires_a_configured_provider():
+    step = StepSpec(
+        id="fetch",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="fetch.sh",
+        inputs=(InputPort("issue_tracker", Requirement.PROVIDER),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    assert wf.provider_requirements() == ("issue_tracker",)
+    # declared but no instance configured -> refuse, loud and specific
+    with pytest.raises(OrchestratorError, match="provider 'issue_tracker'"):
+        warm_up(wf, {})
+    # a configured instance present -> ready
+    warm_up(wf, {}, providers={"issue_tracker"})

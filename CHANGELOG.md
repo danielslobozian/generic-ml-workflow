@@ -9,6 +9,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+- **Providers — declare and validate (foundation).** A step can declare it needs a
+  **provider** — a named external dependency like an issue tracker (a new `provider`
+  input requirement). `Workflow.provider_requirements()` gathers the kinds a workflow
+  needs, and the token-free warm-up check now refuses to open a run when a required
+  provider has no configured instance, failing loud and specific alongside the
+  existing run-input / config / credential checks. Reading instances from config +
+  credentials and feeding them into a step are the next slices.
+
 ## [0.0.8] - 2026-06-16
 
 ### Added
