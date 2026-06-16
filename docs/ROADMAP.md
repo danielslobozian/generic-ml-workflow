@@ -15,13 +15,14 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.7 — tier reconciliation (detection-driven)** is the latest release: startup
-reconciles the configured `[tiers]` against what gmlcache reports installed
-(advisory — missing client, stale model), a step's tier can be overridden per run
-(recorded as an event), and the launch warns when gmlcache is below the floor the
-engine needs. 0.0.1–0.0.7 are published; next up: **0.0.8 — running for real:
-run modes, background execution, clean stop** (run modes and the execution-context
-model are now defined in DESIGN §7 and §11).
+**0.0.8 — running for real** is the latest release: a run advances on a background
+worker while the prompt stays live, picks a mode at launch (full-auto / full-manual
+checkpointing / questions-only), can be **stopped** cleanly (the teardown cascades
+into gmlcache) and **resumed** from its own event log, and the **questions gate**
+lets a step ask, block, take the user's answers, and feed them into later steps.
+0.0.1–0.0.8 are published; next up: **0.0.9 — credentials and roles** (a credential
+role declared by a step, satisfied at launch, with the token never transiting a
+model call — the handling sinks toward gmlcache).
 
 ---
 

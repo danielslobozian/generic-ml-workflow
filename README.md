@@ -11,13 +11,18 @@ It is **not** a CLI you invoke with arguments: there is no usage model in which 
 human types a workflow name and flags on a shell command line. Launching it *is*
 the interface.
 
-> **Status: alpha, `0.0.7`.** The app checks its mandatory dependencies
+> **Status: alpha, `0.0.8`.** The app checks its mandatory dependencies
 > (git + gmlcache), interviews you on first run and git-inits your flows
 > folder, loads and validates workflow definitions, and **runs both executable
 > and interpretable (ML/shot) workflows end to end** (`/run`) on an event-sourced
-> store with stamped, replayable histories (`/replay`). Shots resolve their tier
-> from `[tiers]` config and run through gmlcache. Still alpha, still honest about
-> what it can't do yet.
+> store with stamped, replayable histories (`/replay`). Runs advance on a
+> background worker while the prompt stays live; you can **stop** a run cleanly
+> (the teardown reaches into gmlcache) and **resume** it from its own log. A run
+> picks a mode at launch — full-auto, full-manual (checkpoint each step), or
+> questions-only — and in the **questions gate** a step can ask, block, and take
+> your answers (`/answer`), which feed back into later steps. Shots resolve their
+> tier from `[tiers]` config and run through gmlcache. Still alpha, still honest
+> about what it can't do yet.
 
 ## The family
 
