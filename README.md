@@ -11,7 +11,7 @@ It is **not** a CLI you invoke with arguments: there is no usage model in which 
 human types a workflow name and flags on a shell command line. Launching it *is*
 the interface.
 
-> **Status: alpha, `0.0.8`.** The app checks its mandatory dependencies
+> **Status: alpha, `0.0.9`.** The app checks its mandatory dependencies
 > (git + gmlcache), interviews you on first run and git-inits your flows
 > folder, loads and validates workflow definitions, and **runs both executable
 > and interpretable (ML/shot) workflows end to end** (`/run`) on an event-sourced
@@ -20,9 +20,13 @@ the interface.
 > (the teardown reaches into gmlcache) and **resume** it from its own log. A run
 > picks a mode at launch — full-auto, full-manual (checkpoint each step), or
 > questions-only — and in the **questions gate** a step can ask, block, and take
-> your answers (`/answer`), which feed back into later steps. Shots resolve their
-> tier from `[tiers]` config and run through gmlcache. Still alpha, still honest
-> about what it can't do yet.
+> your answers (`/answer`), which feed back into later steps. Steps can now declare
+> a **provider** — a named external dependency (issue tracker, database, file
+> source) described in `flows/providers/`, configured as instances in config plus a
+> private `credentials.toml`, and bound per workflow; a step reaches it via injected
+> env vars or the engine's host-pinned `builtin:fetch`, with the token never entering
+> step code or the event log. Shots resolve their tier from `[tiers]` config and run
+> through gmlcache. Still alpha, still honest about what it can't do yet.
 
 ## The family
 
