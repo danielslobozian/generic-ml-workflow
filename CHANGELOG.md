@@ -40,6 +40,14 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   back to the `default` (or single) instance, and binding a kind to an unconfigured
   alias fails loud. (`ProviderBinding`, `Workflow.provider_aliases`, `load_providers`
   gained a `bindings` argument.)
+- **Providers — the engine's built-in fetch.** A step with entrypoint `builtin:fetch`
+  pulls from a provider with no user script: the engine reads the bound instance's
+  `base_url` and token, fetches the step's `path` input, and writes the response to
+  the step's output. The token is held only in-process — it never enters step code
+  and never reaches the event log. The request is **host-pinned**: a path may name a
+  resource under the configured base, never another host and never a climb above the
+  base path (an escaping path fails the step). (`builtin_bodies` with `pin_url`;
+  `run_executable` dispatches built-in bodies; the orchestrator hands it the instance.)
 
 ## [0.0.8] - 2026-06-16
 

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from generic_ml_workflow.core.contract import StepNature, StepSpec
+from generic_ml_workflow.core import builtin_bodies
 from generic_ml_workflow.core.stopping import StopControl, run_supervised
 
 
@@ -81,6 +82,7 @@ def run_executable(
     timeout: float = 300.0,
     stop: StopControl | None = None,
     env: dict[str, str] | None = None,
+    provider_instance: dict[str, object] | None = None,
 ) -> StepResult:
     """Run a user-supplied executable step in an isolated ``run_dir``.
 
@@ -111,20 +113,24 @@ def run_executable(
         else:
             dest.write_text(str(value), encoding="utf-8")
 
-    # 3. run the entrypoint with the run folder as cwd
-    argv = _resolve_entrypoint(spec.entrypoint)
+    # 3. run -- either a built-in body the engine ships, or a user subprocess
     start = time.monotonic()
-    try:
-        proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop, env=env)
-    except FileNotFoundError as exc:
-        raise RunnerError(f"step '{spec.id}': entrypoint not found: {spec.entrypoint}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RunnerError(f"step '{spec.id}': timed out after {timeout}s") from exc
+    if builtin_bodies.is_builtin(spec.entrypoint):
+        returncode, stdout, stderr = _run_builtin(spec, run_dir, inputs, provider_instance)
+    else:
+        argv = _resolve_entrypoint(spec.entrypoint)
+        try:
+            proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop, env=env)
+        except FileNotFoundError as exc:
+            raise RunnerError(f"step '{spec.id}': entrypoint not found: {spec.entrypoint}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerError(f"step '{spec.id}': timed out after {timeout}s") from exc
+        returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
     duration = time.monotonic() - start
 
-    # 4. collect declared outputs (only if the process succeeded)
+    # 4. collect declared outputs (only if the run succeeded)
     produced: list[ProducedOutput] = []
-    if proc.returncode == 0:
+    if returncode == 0:
         for out in spec.outputs:
             target = run_dir / out.filename
             if not target.exists():
@@ -137,12 +143,40 @@ def run_executable(
     return StepResult(
         step_id=spec.id,
         attempt=attempt,
-        exit_code=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
+        exit_code=returncode,
+        stdout=stdout,
+        stderr=stderr,
         duration_seconds=duration,
         outputs=tuple(produced),
     )
+
+
+def _run_builtin(
+    spec: StepSpec,
+    run_dir: Path,
+    inputs: dict[str, object],
+    provider_instance: dict[str, object] | None,
+) -> tuple[int, str, str]:
+    """Run an engine-shipped body. Today only ``fetch``: read the step's ``path``
+    input from the bound provider instance, host-pinned, and write the response to
+    the step's first declared output. A misconfigured step raises ``RunnerError`` (a
+    setup error); a refused/failed fetch returns a non-zero result (a runtime
+    failure), both surfacing as a failed step. The token stays in-process."""
+    name = builtin_bodies.builtin_name(spec.entrypoint)
+    if name != "fetch":
+        raise RunnerError(f"step '{spec.id}': unknown builtin '{name}'")
+    path_value = inputs.get("path")
+    if path_value is None:
+        raise RunnerError(f"step '{spec.id}': builtin fetch needs a 'path' input")
+    if not spec.outputs:
+        raise RunnerError(f"step '{spec.id}': builtin fetch declares no output to write")
+    out_spec = spec.outputs[0]
+    try:
+        body = builtin_bodies.run_fetch(str(path_value), provider_instance or {})
+    except builtin_bodies.BuiltinError as exc:
+        return 1, "", str(exc)
+    (run_dir / out_spec.filename).write_bytes(body)
+    return 0, f"fetched {len(body)} bytes", ""
 
 
 def _resolve_entrypoint(entrypoint: str) -> list[str]:

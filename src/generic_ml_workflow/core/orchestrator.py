@@ -573,8 +573,15 @@ class Orchestrator:
         inputs = self._resolve_inputs(step, context, bindings)
         run_dir = self._workspace / "executions" / execution_id / step.id
         try:
+            prov_kinds = step.required(Requirement.PROVIDER)
+            provider_instance = self._provider_instances.get(prov_kinds[0]) if prov_kinds else None
             result = runner.run_executable(
-                step, run_dir, inputs, stop=stop, env=self._provider_env(step)
+                step,
+                run_dir,
+                inputs,
+                stop=stop,
+                env=self._provider_env(step),
+                provider_instance=provider_instance,
             )
         except runner.RunnerError as exc:
             self._store.emit(

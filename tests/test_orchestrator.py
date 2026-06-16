@@ -924,3 +924,75 @@ def test_warm_up_names_the_specific_missing_provider_property():
         provider_specs=specs,
         provider_instances={"issue_tracker": {"base_url": "https://acme.test", "token": "t"}},
     )
+
+
+# --- 0.0.9 item 3: the built-in fetch -- host-pinned, token stays in-process
+
+
+def test_builtin_fetch_is_host_pinned_and_keeps_token_in_process(tmp_path, monkeypatch):
+    from generic_ml_workflow.core import builtin_bodies as bb
+
+    seen: dict[str, object] = {}
+
+    def fake_get(url, token):
+        seen["url"], seen["token"] = url, token
+        return b"ISSUE-DATA"
+
+    monkeypatch.setattr(bb, "_http_get", fake_get)
+    store = EventStore(":memory:")
+    step = StepSpec(
+        id="pull",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="builtin:fetch",
+        inputs=(
+            InputPort("issue_tracker", Requirement.PROVIDER),
+            InputPort("path", Requirement.RUN_INPUT),
+        ),
+        outputs=(_out("body", "body.json"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {"path": "issues/42"},
+        STAMP,
+        providers={"issue_tracker"},
+        provider_instances={
+            "issue_tracker": {"base_url": "https://acme.test/api", "token": "secret-xyz"}
+        },
+    )
+    assert report.completed
+    # the request was pinned under the configured base, with the token attached
+    assert seen["url"] == "https://acme.test/api/issues/42"
+    assert seen["token"] == "secret-xyz"
+    arts = {
+        e.payload.name: Path(e.payload.path)
+        for e in store.replay(report.execution_id)
+        if e.event_type is et.EventType.ARTIFACT_CREATED
+    }
+    assert arts["body"].read_bytes() == b"ISSUE-DATA"
+    # the token never lands in the event log
+    log_blob = " ".join(str(e.payload.__dict__) for e in store.replay(report.execution_id))
+    assert "secret-xyz" not in log_blob
+
+
+def test_builtin_fetch_refuses_a_path_that_escapes_the_host(tmp_path):
+    store = EventStore(":memory:")
+    step = StepSpec(
+        id="pull",
+        nature=StepNature.EXECUTABLE,
+        entrypoint="builtin:fetch",
+        inputs=(
+            InputPort("issue_tracker", Requirement.PROVIDER),
+            InputPort("path", Requirement.RUN_INPUT),
+        ),
+        outputs=(_out("body", "body.json"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {"path": "https://evil.test/steal"},
+        STAMP,
+        providers={"issue_tracker"},
+        provider_instances={"issue_tracker": {"base_url": "https://acme.test/api", "token": "t"}},
+    )
+    assert not report.completed
