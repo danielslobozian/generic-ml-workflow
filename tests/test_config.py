@@ -175,3 +175,26 @@ def test_initial_config_documents_tiers_unseeded(tmp_path):
     # documented but commented: nothing is seeded, so it parses to no tiers
     cfg = _write(tmp_path, text)
     assert config.load_tiers(cfg) == {}
+
+
+def test_load_providers_merges_config_and_credential_planes(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[providers.issue_tracker.jira]\nbase_url = "https://acme.test"\ntls = true\n',
+        encoding="utf-8",
+    )
+    creds = tmp_path / "credentials.toml"
+    creds.write_text('[providers.issue_tracker.jira]\ntoken = "secret-xyz"\n', encoding="utf-8")
+
+    instances, kinds = config.load_providers(cfg, creds)
+    assert kinds == {"issue_tracker"}
+    inst = instances["issue_tracker"]
+    assert inst["base_url"] == "https://acme.test"
+    assert inst["tls"] is True
+    assert inst["token"] == "secret-xyz"
+
+
+def test_load_providers_empty_when_nothing_configured(tmp_path):
+    instances, kinds = config.load_providers(tmp_path / "none.toml", tmp_path / "none-creds.toml")
+    assert instances == {}
+    assert kinds == set()

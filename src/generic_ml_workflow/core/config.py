@@ -295,3 +295,52 @@ def set_value(cfg_path: Path, setting: str, value: str) -> None:
             out.extend(["", f"[{section}]"])
         out.append(line)
     cfg_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def load_providers(
+    config_file: Path | None = None,
+    credentials_file: Path | None = None,
+) -> tuple[dict[str, dict[str, object]], set[str]]:
+    """Read configured provider instances: the **config plane** from the main config's
+    ``[providers.<kind>.<alias>]`` tables, the **credential plane** (tokens) from a
+    separate ``credentials.toml`` under the same path. Returns ``(instances, kinds)``
+    where ``instances`` maps each provider kind to its resolved instance (config keys
+    merged with the credential keys) and ``kinds`` is the set of kinds that have at
+    least one configured instance (what warm-up checks). The credential file is read
+    separately and its values are never written back anywhere.
+
+    Resolution per kind picks the alias named ``default`` if present, else the single
+    configured alias (multi-alias per-workflow binding is a later slice)."""
+    cfg_path = config_file if config_file is not None else paths_mod.config_path()
+    config_doc = _read_file(cfg_path) if cfg_path.is_file() else {}
+    creds_doc = (
+        _read_file(credentials_file) if credentials_file and credentials_file.is_file() else {}
+    )
+
+    def kinds_of(doc: dict) -> dict:
+        raw = doc.get("providers")
+        return raw if isinstance(raw, dict) else {}
+
+    config_providers = kinds_of(config_doc)
+    creds_providers = kinds_of(creds_doc)
+
+    instances: dict[str, dict[str, object]] = {}
+    kinds: set[str] = set()
+    all_kinds = set(config_providers) | set(creds_providers)
+    for kind in all_kinds:
+        cfg_aliases = config_providers.get(kind, {})
+        cred_aliases = creds_providers.get(kind, {})
+        if not isinstance(cfg_aliases, dict) or not isinstance(cred_aliases, dict):
+            raise ConfigError(f"[providers.{kind}] must be a table of named instances")
+        alias_names = set(cfg_aliases) | set(cred_aliases)
+        if not alias_names:
+            continue
+        chosen = "default" if "default" in alias_names else sorted(alias_names)[0]
+        merged: dict[str, object] = {}
+        for src in (cfg_aliases.get(chosen, {}), cred_aliases.get(chosen, {})):
+            if isinstance(src, dict):
+                merged.update(src)
+        if merged:
+            instances[kind] = merged
+            kinds.add(kind)
+    return instances, kinds

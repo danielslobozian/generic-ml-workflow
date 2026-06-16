@@ -589,6 +589,9 @@ class Repl:
         if not st.versioned:
             self._write("  (flows folder is unversioned -- recording the run as such)")
         shot_config = self._build_shot_config()
+        provider_instances, provider_kinds = config.load_providers(
+            self.settings.config_file, self.settings.state_dir / "credentials.toml"
+        )
         if overrides:
             for step_id, tier in overrides.items():
                 self._write(f"  tier override: {step_id} -> {tier.value}")
@@ -615,6 +618,8 @@ class Repl:
                 shot_config=shot_config,
                 tier_overrides=overrides,
                 mode=mode,
+                providers=provider_kinds,
+                provider_instances=provider_instances,
                 progress=progress,
                 stop=stop,
             )
@@ -687,6 +692,9 @@ class Repl:
             return True
         workflow = match.workflow
         shot_config = self._build_shot_config()
+        provider_instances, _kinds = config.load_providers(
+            self.settings.config_file, self.settings.state_dir / "credentials.toml"
+        )
         if self._rich_input:
             self._write(
                 f"resuming '{wanted}' ({execution_id[:12]}) in the background; "
@@ -697,7 +705,12 @@ class Repl:
 
         def do_resume(orch, progress, stop) -> None:
             orch.resume(
-                execution_id, workflow, shot_config=shot_config, progress=progress, stop=stop
+                execution_id,
+                workflow,
+                shot_config=shot_config,
+                provider_instances=provider_instances,
+                progress=progress,
+                stop=stop,
             )
 
         self._launch(f"resume-{wanted}", do_resume)

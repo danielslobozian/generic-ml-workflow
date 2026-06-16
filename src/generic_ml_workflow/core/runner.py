@@ -80,6 +80,7 @@ def run_executable(
     attempt: int = 1,
     timeout: float = 300.0,
     stop: StopControl | None = None,
+    env: dict[str, str] | None = None,
 ) -> StepResult:
     """Run a user-supplied executable step in an isolated ``run_dir``.
 
@@ -114,7 +115,7 @@ def run_executable(
     argv = _resolve_entrypoint(spec.entrypoint)
     start = time.monotonic()
     try:
-        proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop)
+        proc = run_supervised(argv, cwd=run_dir, timeout=timeout, stop=stop, env=env)
     except FileNotFoundError as exc:
         raise RunnerError(f"step '{spec.id}': entrypoint not found: {spec.entrypoint}") from exc
     except subprocess.TimeoutExpired as exc:

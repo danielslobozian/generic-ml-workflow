@@ -93,11 +93,13 @@ def run_supervised(
     timeout: float | None,
     stop: StopControl | None = None,
     input_text: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a child to completion, killable mid-flight by ``stop``. A drop-in for
     ``subprocess.run(capture_output=True, text=True)``: returns a CompletedProcess,
     raises ``FileNotFoundError`` for a missing executable and ``TimeoutExpired`` on
     timeout (killing the group first), so callers keep their existing error paths.
+    ``env``, if given, is overlaid on the current environment for the child only.
     """
     use_stdin = input_text is not None
     proc = subprocess.Popen(
@@ -107,6 +109,7 @@ def run_supervised(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=({**os.environ, **env} if env else None),
         **_group_kwargs(),
     )
     register = stop.watching(proc) if stop is not None else contextlib.nullcontext()

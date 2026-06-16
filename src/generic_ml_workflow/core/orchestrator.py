@@ -190,6 +190,7 @@ class Orchestrator:
     def __init__(self, store: EventStore, workspace: Path):
         self._store = store
         self._workspace = Path(workspace)
+        self._provider_instances: dict[str, dict[str, str]] = {}
 
     def run(
         self,
@@ -201,6 +202,7 @@ class Orchestrator:
         config_values: dict[str, str] | None = None,
         credentials: set[str] | None = None,
         providers: set[str] | None = None,
+        provider_instances: dict[str, dict[str, str]] | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode = RunMode.FULL_AUTO,
@@ -208,6 +210,7 @@ class Orchestrator:
         stop: StopControl | None = None,
     ) -> RunReport:
         # gate: the definition must be valid (warnings are fine, errors are not)
+        self._provider_instances = provider_instances or {}
         result = workflow.validate()
         if not result.ok:
             raise OrchestratorError(
@@ -437,6 +440,7 @@ class Orchestrator:
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode | None = None,
+        provider_instances: dict[str, dict[str, str]] | None = None,
         progress: ProgressReporter = _ignore_progress,
         stop: StopControl | None = None,
     ) -> RunReport:
@@ -452,6 +456,7 @@ class Orchestrator:
         row = self._store.execution(execution_id)
         if row is None:
             raise OrchestratorError(f"no execution '{execution_id}' to resume")
+        self._provider_instances = provider_instances or {}
         if row["status"] in ("completed", "failed"):
             raise OrchestratorError(
                 f"execution '{execution_id}' is {row['status']} -- nothing to resume"
@@ -549,7 +554,9 @@ class Orchestrator:
         inputs = self._resolve_inputs(step, context, bindings)
         run_dir = self._workspace / "executions" / execution_id / step.id
         try:
-            result = runner.run_executable(step, run_dir, inputs, stop=stop)
+            result = runner.run_executable(
+                step, run_dir, inputs, stop=stop, env=self._provider_env(step)
+            )
         except runner.RunnerError as exc:
             self._store.emit(
                 et.StepFailed(step_name=step.id, reason=str(exc)),
@@ -722,6 +729,20 @@ class Orchestrator:
                 resolved[port.name] = context[port.name]
             # CONFIG / CREDENTIAL resolution lands with their slices
         return resolved
+
+    def _provider_env(self, step: StepSpec) -> dict[str, str] | None:
+        """Env vars for a step's declared providers: each instance value (config plane
+        and token) exposed as ``<KIND>_<KEY>`` (e.g. ``ISSUE_TRACKER_BASE_URL``,
+        ``ISSUE_TRACKER_TOKEN``). The token reaches only the executable's process this
+        way -- never the context, events, prompts, or cassettes (§10). Warm-up already
+        guaranteed each declared provider has a configured instance."""
+        env: dict[str, str] = {}
+        for kind in step.required(Requirement.PROVIDER):
+            instance = self._provider_instances.get(kind, {})
+            prefix = kind.upper()
+            for key, value in instance.items():
+                env[f"{prefix}_{key.upper()}"] = str(value)
+        return env or None
 
     @staticmethod
     def _binding_map(workflow: Workflow) -> dict:

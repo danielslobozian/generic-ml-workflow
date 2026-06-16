@@ -830,3 +830,49 @@ def test_warm_up_requires_a_configured_provider():
         warm_up(wf, {})
     # a configured instance present -> ready
     warm_up(wf, {}, providers={"issue_tracker"})
+
+
+# --- 0.0.9 (consume): a provider instance is env-injected; the token never leaks ---
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sh scripts; POSIX only")
+def test_provider_instance_is_injected_and_token_does_not_leak(tmp_path):
+    store = EventStore(":memory:")
+    sh = tmp_path / "use.sh"
+    sh.write_text(
+        'printf "%s" "$ISSUE_TRACKER_BASE_URL" > url.txt\n'
+        'if [ -n "$ISSUE_TRACKER_TOKEN" ]; then printf present > tok.txt; '
+        "else printf absent > tok.txt; fi\n",
+        encoding="utf-8",
+    )
+    step = StepSpec(
+        id="use",
+        nature=StepNature.EXECUTABLE,
+        entrypoint=str(sh),
+        inputs=(InputPort("issue_tracker", Requirement.PROVIDER),),
+        outputs=(_out("url", "url.txt"), _out("tok", "tok.txt")),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(step,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf,
+        {},
+        STAMP,
+        providers={"issue_tracker"},
+        provider_instances={
+            "issue_tracker": {"base_url": "https://acme.test", "token": "secret-xyz"}
+        },
+    )
+    assert report.completed
+
+    arts = {
+        e.payload.name: Path(e.payload.path)
+        for e in store.replay(report.execution_id)
+        if e.event_type is et.EventType.ARTIFACT_CREATED
+    }
+    # the config plane arrived as env
+    assert arts["url"].read_text() == "https://acme.test"
+    # the token reached the process (present) ...
+    assert arts["tok"].read_text() == "present"
+    # ... but its value is nowhere in the recorded event log
+    log_blob = " ".join(str(e.payload.__dict__) for e in store.replay(report.execution_id))
+    assert "secret-xyz" not in log_blob

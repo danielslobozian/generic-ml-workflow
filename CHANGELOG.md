@@ -17,6 +17,15 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   provider has no configured instance, failing loud and specific alongside the
   existing run-input / config / credential checks. Reading instances from config +
   credentials and feeding them into a step are the next slices.
+- **Providers — configure and consume.** Provider instances are now read from the
+  config's `[providers.<kind>.<alias>]` tables (config plane) merged with a separate
+  `credentials.toml` (credential plane) via `config.load_providers`. When a step
+  declares a provider, the resolved instance's values are env-injected into the
+  executable's process as `<KIND>_<KEY>` (e.g. `ISSUE_TRACKER_BASE_URL`,
+  `ISSUE_TRACKER_TOKEN`) — the token reaches only the child process, never the
+  context, events, logs, prompts, or cassettes (covered by a never-leaks test).
+  Per-workflow alias binding, `ctx.fetch` host-pinning, and chmod enforcement remain
+  for later slices.
 
 ## [0.0.8] - 2026-06-16
 
