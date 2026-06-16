@@ -116,3 +116,23 @@ def test_bindings_parsed(tmp_path):
     wf = load_workflow(p)
     assert wf.validate().ok
     assert wf.bindings[0].step_id == "b" and wf.bindings[0].product == "page"
+
+
+def test_provider_bindings_parse_into_alias_map(tmp_path):
+    wf = load_workflow(
+        _write(
+            tmp_path,
+            "name: w\n"
+            "input_type: freestyle\n"
+            "steps:\n"
+            "  - id: fetch\n"
+            "    nature: executable\n"
+            "    entrypoint: fetch.sh\n"
+            "    inputs:\n"
+            "      - {name: issue_tracker, require: provider}\n"
+            "provider_bindings:\n"
+            "  - {kind: issue_tracker, alias: acme}\n",
+        )
+    )
+    assert wf.provider_requirements() == ("issue_tracker",)
+    assert wf.provider_aliases() == {"issue_tracker": "acme"}

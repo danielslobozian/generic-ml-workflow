@@ -44,6 +44,7 @@ from generic_ml_workflow.core.contract import (
     Lifespan,
     OutputKind,
     OutputPort,
+    ProviderBinding,
     ProviderPlane,
     ProviderProperty,
     ProviderSpec,
@@ -79,7 +80,16 @@ def load_workflow(path: str | Path) -> Workflow:
 
     steps = tuple(_step(path, s) for s in (data.get("steps") or []))
     bindings = tuple(_binding(path, b) for b in (data.get("bindings") or []))
-    return Workflow(name=name, input_type=input_type, steps=steps, bindings=bindings)
+    provider_bindings = tuple(
+        _provider_binding(path, b) for b in (data.get("provider_bindings") or [])
+    )
+    return Workflow(
+        name=name,
+        input_type=input_type,
+        steps=steps,
+        bindings=bindings,
+        provider_bindings=provider_bindings,
+    )
 
 
 def _enum(path: Path, cls, value, field: str):
@@ -146,6 +156,15 @@ def _binding(path: Path, b: dict) -> Binding:
         step_id=_require(path, b, "step", "a binding"),
         port=_require(path, b, "port", "a binding"),
         product=_require(path, b, "product", "a binding"),
+    )
+
+
+def _provider_binding(path: Path, b: dict) -> ProviderBinding:
+    if not isinstance(b, dict):
+        raise WorkflowError(f"{path}: each provider binding must be a mapping")
+    return ProviderBinding(
+        kind=_require(path, b, "kind", "a provider binding"),
+        alias=_require(path, b, "alias", "a provider binding"),
     )
 
 

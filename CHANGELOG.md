@@ -33,6 +33,13 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
   it now says "your instance is missing token (credential)", naming each absent
   required property on the right plane. (`discover_providers`, `load_provider`,
   `ProviderSpec`/`ProviderProperty`; warm-up consults the schema when one exists.)
+- **Providers — per-workflow instance binding.** A workflow can now choose *which*
+  configured instance a provider kind resolves to, via a `provider_bindings` block
+  (`{kind, alias}`). A step still declares only the kind, so the same step can hit
+  one instance in one workflow and a different one in another; an unbound kind falls
+  back to the `default` (or single) instance, and binding a kind to an unconfigured
+  alias fails loud. (`ProviderBinding`, `Workflow.provider_aliases`, `load_providers`
+  gained a `bindings` argument.)
 
 ## [0.0.8] - 2026-06-16
 

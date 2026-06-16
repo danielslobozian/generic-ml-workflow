@@ -198,3 +198,28 @@ def test_load_providers_empty_when_nothing_configured(tmp_path):
     instances, kinds = config.load_providers(tmp_path / "none.toml", tmp_path / "none-creds.toml")
     assert instances == {}
     assert kinds == set()
+
+
+def test_load_providers_binding_selects_the_alias(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[providers.issue_tracker.acme]\nbase_url = "https://acme"\n'
+        '[providers.issue_tracker.other]\nbase_url = "https://other"\n',
+        encoding="utf-8",
+    )
+    creds = tmp_path / "credentials.toml"
+    creds.write_text(
+        '[providers.issue_tracker.acme]\ntoken = "a"\n'
+        '[providers.issue_tracker.other]\ntoken = "o"\n',
+        encoding="utf-8",
+    )
+    inst, _ = config.load_providers(cfg, creds, bindings={"issue_tracker": "other"})
+    assert inst["issue_tracker"]["base_url"] == "https://other"
+    assert inst["issue_tracker"]["token"] == "o"
+
+
+def test_load_providers_binding_to_unknown_alias_raises(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[providers.issue_tracker.acme]\nbase_url = "x"\n', encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="no such instance"):
+        config.load_providers(cfg, None, bindings={"issue_tracker": "ghost"})

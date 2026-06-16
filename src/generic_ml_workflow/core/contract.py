@@ -213,6 +213,17 @@ class Binding:
 
 
 @dataclass(frozen=True)
+class ProviderBinding:
+    """Workflow-level choice of which configured instance (alias) a provider kind
+    resolves to for this workflow, e.g. kind 'issue_tracker' -> alias 'acme'. A step
+    declares only the kind; the workflow picks the instance, so the same step can hit
+    a different instance in another workflow (DESIGN.md §10)."""
+
+    kind: str
+    alias: str
+
+
+@dataclass(frozen=True)
 class ValidationResult:
     """The outcome of a token-free validation pass: hard errors and soft warnings."""
 
@@ -233,6 +244,7 @@ class Workflow:
     input_type: InputType
     steps: tuple[StepSpec, ...]
     bindings: tuple[Binding, ...] = ()
+    provider_bindings: tuple[ProviderBinding, ...] = ()
 
     # --- computed requirements (for the run interview + warm-up, slice 0.0.5) ---
     def run_inputs(self) -> tuple[str, ...]:
@@ -269,6 +281,11 @@ class Workflow:
                 if name not in seen:
                     seen.append(name)
         return tuple(seen)
+
+    def provider_aliases(self) -> dict[str, str]:
+        """This workflow's instance choices: ``{kind: alias}`` from its provider
+        bindings. An unbound kind resolves to its default/single instance."""
+        return {b.kind: b.alias for b in self.provider_bindings}
 
     def validate(self) -> ValidationResult:
         """Deduced correctness, token-free. Returns errors + warnings rather than

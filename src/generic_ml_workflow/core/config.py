@@ -300,6 +300,7 @@ def set_value(cfg_path: Path, setting: str, value: str) -> None:
 def load_providers(
     config_file: Path | None = None,
     credentials_file: Path | None = None,
+    bindings: dict[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, object]], set[str]]:
     """Read configured provider instances: the **config plane** from the main config's
     ``[providers.<kind>.<alias>]`` tables, the **credential plane** (tokens) from a
@@ -309,8 +310,11 @@ def load_providers(
     least one configured instance (what warm-up checks). The credential file is read
     separately and its values are never written back anywhere.
 
-    Resolution per kind picks the alias named ``default`` if present, else the single
-    configured alias (multi-alias per-workflow binding is a later slice)."""
+    Resolution per kind: ``bindings`` (``{kind: alias}``, typically a workflow's
+    choices) selects the instance; an unbound kind falls back to the alias named
+    ``default`` if present, else the single configured alias. A binding naming an
+    alias with no configured instance raises :class:`ConfigError`."""
+    bindings = bindings or {}
     cfg_path = config_file if config_file is not None else paths_mod.config_path()
     config_doc = _read_file(cfg_path) if cfg_path.is_file() else {}
     creds_doc = (
@@ -335,7 +339,18 @@ def load_providers(
         alias_names = set(cfg_aliases) | set(cred_aliases)
         if not alias_names:
             continue
-        chosen = "default" if "default" in alias_names else sorted(alias_names)[0]
+        bound = bindings.get(kind)
+        if bound is not None:
+            if bound not in alias_names:
+                raise ConfigError(
+                    f"workflow binds provider '{kind}' to instance '{bound}', "
+                    "but no such instance is configured"
+                )
+            chosen = bound
+        elif "default" in alias_names:
+            chosen = "default"
+        else:
+            chosen = sorted(alias_names)[0]
         merged: dict[str, object] = {}
         for src in (cfg_aliases.get(chosen, {}), cred_aliases.get(chosen, {})):
             if isinstance(src, dict):

@@ -590,7 +590,9 @@ class Repl:
             self._write("  (flows folder is unversioned -- recording the run as such)")
         shot_config = self._build_shot_config()
         provider_instances, provider_kinds = config.load_providers(
-            self.settings.config_file, self.settings.state_dir / "credentials.toml"
+            self.settings.config_file,
+            self.settings.state_dir / "credentials.toml",
+            bindings=workflow.provider_aliases(),
         )
         provider_specs = discovery.discover_providers(self.settings.flows_dir)
         if overrides:
@@ -695,7 +697,9 @@ class Repl:
         workflow = match.workflow
         shot_config = self._build_shot_config()
         provider_instances, _kinds = config.load_providers(
-            self.settings.config_file, self.settings.state_dir / "credentials.toml"
+            self.settings.config_file,
+            self.settings.state_dir / "credentials.toml",
+            bindings=workflow.provider_aliases(),
         )
         if self._rich_input:
             self._write(
