@@ -52,6 +52,7 @@ class EventType(str, Enum):
     ARTIFACT_CREATED = "artifact.created"
     QUESTIONS_ASKED = "questions.asked"
     ANSWER_SUBMITTED = "answer.submitted"
+    PROBE_RECORDED = "probe.recorded"
 
 
 class Payload:
@@ -212,6 +213,24 @@ class AnswerSubmitted(Payload):
     status: str = "answered"  # answered | skipped
 
 
+@dataclass(frozen=True)
+class ProbeRecorded(Payload):
+    """The verdict of a recorded probe -- one tiny shot taken to learn whether a
+    concrete ``(client, model, effort)`` triple actually runs (rung 2 of the
+    validation ladder, DESIGN SS9). The triple's identity is carried here as scalars
+    (and also encodes the event's stream key, so a triple's verdicts replay as their
+    own history). ``ok`` is the verdict; ``error`` holds the client's own message
+    **verbatim** when it failed -- the truth comes from the run, not our paraphrase.
+    When the probe was taken is the event's own ``occurred_at`` -- not duplicated."""
+
+    event_type = EventType.PROBE_RECORDED
+    client: str
+    model: str
+    effort: str | None = None
+    ok: bool = False
+    error: str | None = None  # the client's own failure message, verbatim, when not ok
+
+
 # --- the registry + self-description -----------------------------------------
 
 _REGISTRY: dict[EventType, type[Payload]] = {
@@ -231,6 +250,7 @@ _REGISTRY: dict[EventType, type[Payload]] = {
         ArtifactCreated,
         QuestionsAsked,
         AnswerSubmitted,
+        ProbeRecorded,
     )
 }
 

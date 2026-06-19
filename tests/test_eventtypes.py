@@ -102,3 +102,12 @@ def test_step_completed_defaults_usage_to_none():
 
     p = _et.StepCompleted(step_name="s")
     assert p.input_tokens is None and p.cost_usd is None
+
+
+def test_probe_recorded_round_trips_and_is_registered():
+    from generic_ml_workflow.core import eventtypes as _et
+
+    p = _et.ProbeRecorded(client="claude", model="opus", effort="high", ok=False, error="nope")
+    again = _et.ProbeRecorded.from_json(p.to_json())
+    assert again.client == "claude" and again.ok is False and again.error == "nope"
+    assert _et.EventType.PROBE_RECORDED in _et._REGISTRY
