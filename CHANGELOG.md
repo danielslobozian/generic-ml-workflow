@@ -9,6 +9,17 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`/cost` -- the cost view (0.0.10).** Spend per step and per execution, in tokens
+  (with an advisory cost when a client reports one), folded from the event log:
+  - The shot runner reads each shot's normalized usage from gmlcache's `run --json`
+    envelope, degrading to "unknown" (never zero) if no envelope is present.
+  - Usage rides on the `step.completed` event as flat scalars, so the log stays the
+    source of truth and `/cost` is a rebuildable projection over it.
+  - Aggregation keeps "unknown" distinct from "zero": a total field is `None` unless
+    some step reported it. Per-job totals arrive with persistent jobs (0.0.12).
+
 ## [0.0.9] - 2026-06-16
 
 ### Added

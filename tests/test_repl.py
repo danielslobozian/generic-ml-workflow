@@ -70,13 +70,12 @@ def test_help_lists_the_closed_verb_set():
 
 
 def test_stub_verbs_answer_not_yet_with_the_slice():
-    out = drive(["/cost", "/quit"], PRESENT)
-    assert "not yet" in out and "0.0.10" in out and "ROADMAP" in out
+    out = drive(["/export", "/quit"], PRESENT)
+    assert "not yet" in out and "0.1.2" in out and "ROADMAP" in out
 
 
 def test_every_stub_names_its_slice():
     for verb, slice_id in [
-        ("/cost", "0.0.10"),
         ("/export", "0.1.2"),
         ("/companion", "0.3.1"),
     ]:
@@ -911,3 +910,9 @@ def test_answer_with_nothing_pending_says_so(tmp_path):
     cfg, _ = _run_cfg(tmp_path)
     out, _ = drive_at(["/answer", "/quit"], PRESENT, cfg)
     assert "no questions are awaiting an answer" in out
+
+
+def test_cost_command_is_live_not_a_stub():
+    # /cost is implemented in 0.0.10 -- it must not print the stub's "not yet".
+    out = drive(["/cost", "/quit"], PRESENT)
+    assert "not yet" not in out

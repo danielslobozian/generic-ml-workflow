@@ -52,6 +52,7 @@ from generic_ml_workflow import __version__
 from generic_ml_workflow.core import (
     config,
     contract,
+    cost,
     detect,
     discovery,
     events,
@@ -183,7 +184,7 @@ class Repl:
                 "each effective setting, with its source",
             ),
             "cost": _Verb(
-                _stub("0.0.10", "the cost view"),
+                Repl._do_cost,
                 "/cost",
                 "spend in tokens/usage, per step / execution / job",
             ),
@@ -889,6 +890,39 @@ class Repl:
         if not resolutions:
             return None
         return orchestrator.ShotConfig(resolutions=resolutions)
+
+    def _do_cost(self, args: list[str]) -> bool:
+        """Spend per step and per execution, in tokens (plus an advisory cost when a
+        client reported one). No argument shows the latest execution; pass an
+        execution id (or a unique prefix) for another. Folded from the event log."""
+        store = self._open_store()
+        if store is None:
+            return True
+        try:
+            execs = store.executions()
+            if not execs:
+                self._write("no executions yet -- run a workflow and its cost will appear here.")
+                return True
+            if args:
+                row = store.execution(args[0]) or self._find_execution_prefix(store, args[0])
+                if row is None:
+                    self._write(f"no execution '{args[0]}'. try '/cost' for the latest.")
+                    return True
+            else:
+                row = execs[-1]  # executions() is oldest-first; the latest is last
+            eid = row["execution_id"]
+            report = cost.project(store.replay(eid))
+            self._write(f"cost -- execution {eid[:12]}  {row['workflow_name']} [{row['status']}]")
+            if not report.steps:
+                self._write("  no completed steps yet.")
+                return True
+            for step in report.steps:
+                self._write(f"  {step.step_name:<24} {cost.render_usage(step.usage)}")
+            self._write(f"  {'TOTAL':<24} {cost.render_usage(report.total)}")
+            self._write("  (per-job totals arrive with persistent jobs, 0.0.12)")
+            return True
+        finally:
+            store.close()
 
     def _do_replay(self, args: list[str]) -> bool:
         store = self._open_store()
