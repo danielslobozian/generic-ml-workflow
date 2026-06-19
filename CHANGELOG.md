@@ -9,6 +9,8 @@ between releases; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the path to `1.0.
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-06-19
+
 ### Added
 
 - **`/cost` -- the cost view (0.0.10).** Spend per step and per execution, in tokens

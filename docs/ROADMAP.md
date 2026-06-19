@@ -15,15 +15,14 @@ yet, the gmlcache slice ships first.
 
 ## Where we are
 
-**0.0.8 — running for real** is the latest release: a run advances on a background
-worker while the prompt stays live, picks a mode at launch (full-auto / full-manual
-checkpointing / questions-only), can be **stopped** cleanly (the teardown cascades
-into gmlcache) and **resumed** from its own event log, and the **questions gate**
-lets a step ask, block, take the user's answers, and feed them into later steps.
-0.0.1–0.0.9 are published; next up: **0.0.10 — cost** (`/cost` per step / execution
-/ job, in tokens + usage units, read from gmlcache's normalized result envelope —
-the engine parses no client output, and the slice blocks on that envelope shipping
-in gmlcache first).
+**0.0.10 — cost** is the latest release: `/cost` shows spend per step and per
+execution in tokens (plus an advisory cost when a client reports one), folded from
+the event log — the shot runner reads each shot's normalized usage from gmlcache's
+`run --json` envelope, that usage rides on the `step.completed` event, and `/cost`
+is a rebuildable projection over it. 0.0.1–0.0.10 are published; next up:
+**0.0.11 — the validation ladder, rungs 2–3**: a recorded probe per
+`(client, model, effort)`, its verdict stored as an event, re-probed on demand or
+when stale, with real-run errors surfaced verbatim.
 
 ---
 
