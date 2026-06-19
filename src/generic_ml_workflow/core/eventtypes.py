@@ -162,9 +162,21 @@ class StepStarted(Payload):
 
 @dataclass(frozen=True)
 class StepCompleted(Payload):
+    """A step finished. For an interpretable step (a shot) the normalized usage
+    gmlcache reported rides along as flat scalars -- tokens, plus an advisory cost --
+    so the event log stays the source of truth the cost view aggregates from.
+    Executable steps make no model call, so their usage fields stay None; a shot
+    whose usage gmlcache could not report leaves them None too (unknown, not zero)."""
+
     event_type = EventType.STEP_COMPLETED
     step_name: str
     attempt: int = 1
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True)

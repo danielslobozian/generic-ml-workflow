@@ -726,8 +726,22 @@ class Orchestrator:
                     step_name=step.id,
                 )
                 context[produced.name] = produced.path
+        # The shot's normalized usage (from gmlcache's --json envelope) rides on the
+        # completion event, so the cost view aggregates from the log, not from a
+        # re-run. None throughout when usage is unknown (degraded) -- never zeroed.
+        usage = result.usage
         self._store.emit(
-            et.StepCompleted(step_name=step.id), execution_id=execution_id, step_name=step.id
+            et.StepCompleted(
+                step_name=step.id,
+                input_tokens=usage.input_tokens if usage else None,
+                output_tokens=usage.output_tokens if usage else None,
+                cache_read_tokens=usage.cache_read_tokens if usage else None,
+                cache_write_tokens=usage.cache_write_tokens if usage else None,
+                reasoning_tokens=usage.reasoning_tokens if usage else None,
+                cost_usd=usage.cost_usd if usage else None,
+            ),
+            execution_id=execution_id,
+            step_name=step.id,
         )
         report.steps_run.append(step.id)
         return True

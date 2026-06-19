@@ -86,3 +86,19 @@ def test_tier_overridden_registered_and_round_trips():
     assert again.step_name == "summarize" and again.from_tier == "medium"
     assert again.to_tier == "high"
     assert "tier.overridden" in et.event_types()
+
+
+def test_step_completed_carries_usage_and_round_trips():
+    from generic_ml_workflow.core import eventtypes as _et
+
+    p = _et.StepCompleted(step_name="s", input_tokens=10, output_tokens=5, cost_usd=0.01)
+    again = _et.StepCompleted.from_json(p.to_json())
+    assert again.input_tokens == 10 and again.output_tokens == 5 and again.cost_usd == 0.01
+    assert again.cache_read_tokens is None  # unset stays None, never zero
+
+
+def test_step_completed_defaults_usage_to_none():
+    from generic_ml_workflow.core import eventtypes as _et
+
+    p = _et.StepCompleted(step_name="s")
+    assert p.input_tokens is None and p.cost_usd is None

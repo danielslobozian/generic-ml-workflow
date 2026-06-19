@@ -1033,3 +1033,79 @@ def test_provider_token_is_absent_from_the_entire_persisted_store(tmp_path, monk
     assert report.completed
     whole_store = "\n".join(store._conn.iterdump())
     assert "secret-xyz" not in whole_store
+
+
+# --- slice 2: the shot's usage lands on the step.completed event -------------
+
+
+def _fake_shot_runner_with_usage(produces, usage):
+    base = _fake_shot_runner(produces)
+
+    def runner_fn(spec, envelope, resolution, run_dir, *, mode, **kw):
+        r = base(spec, envelope, resolution, run_dir, mode=mode, **kw)
+        return shotrunner.ShotResult(
+            step_id=r.step_id,
+            attempt=r.attempt,
+            exit_code=r.exit_code,
+            stdout=r.stdout,
+            stderr=r.stderr,
+            duration_seconds=r.duration_seconds,
+            outputs=r.outputs,
+            usage=usage,
+        )
+
+    return runner_fn
+
+
+def _usage_shot(tmp_path, usage):
+    return ShotConfig(
+        resolutions={Tier.MEDIUM: shotrunner.Resolution("claude", "sonnet")},
+        mode="cache",
+        run_shot=_fake_shot_runner_with_usage("s", usage),
+    )
+
+
+def test_shot_usage_lands_on_the_step_completed_event(tmp_path):
+    from generic_ml_workflow.core.usage import Usage
+
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=Tier.MEDIUM,
+        outputs=(_out("summary", "summary.md"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    usage = Usage(input_tokens=120, output_tokens=40, cache_read_tokens=8, cost_usd=0.003)
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf, {}, STAMP, shot_config=_usage_shot(tmp_path, usage)
+    )
+    assert report.completed
+    done = next(
+        e for e in store.replay(report.execution_id) if e.event_type is et.EventType.STEP_COMPLETED
+    )
+    assert done.payload.input_tokens == 120
+    assert done.payload.output_tokens == 40
+    assert done.payload.cache_read_tokens == 8
+    assert done.payload.cost_usd == 0.003
+
+
+def test_shot_without_usage_leaves_step_completed_usage_none(tmp_path):
+    store = EventStore(":memory:")
+    shot = StepSpec(
+        id="summarize",
+        nature=StepNature.INTERPRETABLE,
+        cap="summarizer",
+        tier=Tier.MEDIUM,
+        outputs=(_out("summary", "summary.md"),),
+    )
+    wf = Workflow(name="w", input_type=InputType.FREESTYLE, steps=(shot,))
+    report = Orchestrator(store, tmp_path / "ws").run(
+        wf, {}, STAMP, shot_config=_shot_config(tmp_path, "s")
+    )
+    assert report.completed
+    done = next(
+        e for e in store.replay(report.execution_id) if e.event_type is et.EventType.STEP_COMPLETED
+    )
+    assert done.payload.input_tokens is None and done.payload.cost_usd is None
