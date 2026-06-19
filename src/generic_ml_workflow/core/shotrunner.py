@@ -8,12 +8,15 @@ gmlcache as a subprocess. The shot runner builds *what* to call -- the
 invokes ``gmlcache run`` in the step's isolated run folder, where gmlcache is the
 caller, the cache, and the replayer.
 
-gmlcache's ``run`` is a transparent passthrough: it writes the client's stdout to
-our stdout, writes produced files into its working directory (which this runner
-sets to the step's run folder), and exits with the client's exit code (cache
-diagnostics only with ``-v``). So this runner captures stdout/stderr/exit and then
-collects the step's declared output files from the run folder -- the same
-collection discipline as the executable runner.
+We invoke ``gmlcache run --json``, so stdout is a machine-readable envelope (the
+answer plus normalized usage and the run status), not the raw client output;
+gmlcache still writes produced files into its working directory (which this runner
+sets to the step's run folder) and exits with the client's exit code. So this
+runner captures the envelope (lifting the answer and usage out of it), keeps
+stderr/exit, and then collects the step's declared output files from the run folder
+-- the same collection discipline as the executable runner. If the envelope is
+absent or unparseable (an older gmlcache, or an error before it), the runner
+degrades to treating stdout as the raw answer with usage unknown.
 
 The cassette store makes runs cacheable and replayable, but as of gmlcache 0.0.7
 the store is the cache's own (config-owned) concern: the engine passes neither a
@@ -26,6 +29,7 @@ exercised through an injected runner in tests and a recorded cassette in CI.
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
 import time
@@ -35,6 +39,7 @@ from pathlib import Path
 from generic_ml_workflow.core.contract import StepNature, StepSpec
 from generic_ml_workflow.core.envelope import Envelope
 from generic_ml_workflow.core.stopping import StopControl, run_supervised
+from generic_ml_workflow.core.usage import Usage, usage_from_envelope
 
 
 class ShotError(Exception):
@@ -67,6 +72,9 @@ class ShotResult:
     stderr: str
     duration_seconds: float
     outputs: tuple[ProducedOutput, ...] = field(default_factory=tuple)
+    #: normalized usage lifted from gmlcache's --json envelope; None when the
+    #: envelope carried no usage (or could not be parsed -- the run still stands).
+    usage: "Usage | None" = None
 
     @property
     def ok(self) -> bool:
@@ -113,6 +121,10 @@ def build_argv(
         str(prompt_file),
         "--mode",
         mode,
+        # Ask for the machine-readable envelope so we read back normalized usage
+        # (and the answer) without parsing client output ourselves. gmlcache still
+        # writes produced files into the run folder; --json only changes stdout.
+        "--json",
     ]
     if resolution.effort:
         argv += ["--effort", resolution.effort]
@@ -171,6 +183,23 @@ def run_shot(
         raise ShotError(f"step '{spec.id}': shot timed out after {timeout}s") from exc
     duration = time.monotonic() - start
 
+    # gmlcache ran with --json: stdout is a machine envelope (status / exit / files
+    # / usage / stdout), not the raw answer. Lift the answer and the normalized
+    # usage out of it. If it is not the expected JSON -- an older gmlcache, or an
+    # error printed before the envelope -- degrade: treat stdout as the raw answer
+    # and leave usage unknown, so the run still stands and the cost view stays quiet
+    # rather than breaking.
+    raw_stdout = proc.stdout or ""
+    answer = raw_stdout
+    usage: Usage | None = None
+    try:
+        envelope = json.loads(raw_stdout)
+        if isinstance(envelope, dict) and "stdout" in envelope:
+            answer = envelope.get("stdout") or ""
+            usage = usage_from_envelope(envelope)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
     produced: list[ProducedOutput] = []
     if proc.returncode == 0:
         for out in spec.outputs:
@@ -186,8 +215,9 @@ def run_shot(
         step_id=spec.id,
         attempt=attempt,
         exit_code=proc.returncode,
-        stdout=proc.stdout or "",
+        stdout=answer,
         stderr=proc.stderr or "",
         duration_seconds=duration,
         outputs=tuple(produced),
+        usage=usage,
     )

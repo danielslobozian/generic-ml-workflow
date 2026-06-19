@@ -3,6 +3,7 @@
 """The gmlcache seam (shot runner): argv construction (pure) and the run path
 with an injected runner (no real gmlcache needed). DESIGN.md SS8/SS9."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -167,3 +168,61 @@ def test_run_missing_gmlcache_binary_is_clear(tmp_path):
             tmp_path / "run",
             _runner=boom,
         )
+
+
+# --- the --json envelope: answer + normalized usage (slice 1) ----------------
+
+
+def test_argv_requests_json_envelope(tmp_path):
+    argv = build_argv(_env(), Resolution("claude", "sonnet"), tmp_path)
+    assert "--json" in argv
+
+
+def test_run_lifts_answer_and_usage_from_json_envelope(tmp_path):
+    envelope = {
+        "status": "recorded",
+        "cached": False,
+        "exit": 0,
+        "client": "claude",
+        "model": "sonnet",
+        "effort": "",
+        "files": 1,
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 7,
+            "cache_read_tokens": 3,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": None,
+            "cost_usd": 0.002,
+        },
+        "stdout": "the answer",
+    }
+
+    def fake_runner(argv, **kw):
+        (Path(kw["cwd"]) / "summary.md").write_text("s", encoding="utf-8")
+        return _fake_proc(stdout=json.dumps(envelope))
+
+    result = run_shot(
+        _shot(), _env(), Resolution("claude", "sonnet"), tmp_path / "run", _runner=fake_runner
+    )
+    assert result.ok
+    assert result.stdout == "the answer"  # answer lifted from the envelope, not the raw JSON
+    assert result.usage is not None
+    assert result.usage.input_tokens == 12
+    assert result.usage.output_tokens == 7
+    assert result.usage.cache_read_tokens == 3
+    assert result.usage.cost_usd == 0.002
+    assert result.usage.total_tokens == 19
+
+
+def test_run_degrades_when_stdout_is_not_an_envelope(tmp_path):
+    def fake_runner(argv, **kw):
+        (Path(kw["cwd"]) / "summary.md").write_text("s", encoding="utf-8")
+        return _fake_proc(stdout="plain non-json answer")
+
+    result = run_shot(
+        _shot(), _env(), Resolution("claude", "m"), tmp_path / "run", _runner=fake_runner
+    )
+    assert result.ok
+    assert result.stdout == "plain non-json answer"  # raw answer kept
+    assert result.usage is None  # usage unknown, never invented
