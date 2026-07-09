@@ -33,8 +33,10 @@ import json
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 from generic_ml_workflow.core.contract import StepNature, StepSpec
 from generic_ml_workflow.core.envelope import Envelope
@@ -144,7 +146,7 @@ def run_shot(
     timeout: float = 600.0,
     gmlcache: str = "gmlcache",
     stop: "StopControl | None" = None,
-    _runner=None,
+    _runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> ShotResult:
     """Run an interpretable step through gmlcache in an isolated run folder.
 
@@ -195,8 +197,9 @@ def run_shot(
     try:
         envelope = json.loads(raw_stdout)
         if isinstance(envelope, dict) and "stdout" in envelope:
-            answer = envelope.get("stdout") or ""
-            usage = usage_from_envelope(envelope)
+            envelope_map = cast(dict[str, Any], envelope)
+            answer = envelope_map.get("stdout") or ""
+            usage = usage_from_envelope(envelope_map)
     except (json.JSONDecodeError, ValueError):
         pass
 

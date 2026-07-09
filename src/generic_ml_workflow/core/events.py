@@ -30,6 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 from generic_ml_workflow.core import eventtypes
 from generic_ml_workflow.core.eventtypes import EventType, Payload
@@ -184,15 +185,18 @@ class EventStore:
     # --- projections (pure function of the event; rebuilt by replaying) ---
     def _project(self, e: Event) -> None:
         c = self._conn
-        p = e.payload
+        # The event_type <-> payload-bean correspondence is a system invariant
+        # (emit() sets event_type from the bean), so each branch casts to its bean.
         if e.event_type is EventType.JOB_OPENED:
+            opened = cast(eventtypes.JobOpened, e.payload)
             c.execute(
                 "INSERT INTO jobs(job_id,label,created_at,updated_at) VALUES(?,?,?,?) "
                 "ON CONFLICT(job_id) DO UPDATE SET label=COALESCE(excluded.label, jobs.label),"
                 "updated_at=excluded.updated_at",
-                (p.job_id, p.label, e.occurred_at, e.occurred_at),
+                (opened.job_id, opened.label, e.occurred_at, e.occurred_at),
             )
         elif e.event_type is EventType.WORKFLOW_EXECUTION_STARTED:
+            started = cast(eventtypes.WorkflowExecutionStarted, e.payload)
             c.execute(
                 "INSERT INTO workflow_executions(execution_id,workflow_name,input_type,job_id,"
                 "status,commit_hash,branch,engine_version,created_at,updated_at) "
@@ -201,13 +205,13 @@ class EventStore:
                 "updated_at=excluded.updated_at",
                 (
                     e.execution_id,
-                    p.workflow_name,
-                    p.input_type,
-                    p.job_id,
+                    started.workflow_name,
+                    started.input_type,
+                    started.job_id,
                     "running",
-                    p.commit,
-                    p.branch,
-                    p.engine_version,
+                    started.commit,
+                    started.branch,
+                    started.engine_version,
                     e.occurred_at,
                     e.occurred_at,
                 ),
@@ -234,7 +238,8 @@ class EventStore:
                 (e.occurred_at, e.execution_id),
             )
         elif e.event_type is EventType.QUESTIONS_ASKED:
-            for q in e.payload.questions:
+            asked = cast(eventtypes.QuestionsAsked, e.payload)
+            for q in asked.questions:
                 c.execute(
                     "INSERT INTO gate_questions(execution_id,step_name,question_id,text,"
                     "blocking,status,answer,asked_at,answered_at) "
@@ -252,20 +257,21 @@ class EventStore:
                     ),
                 )
         elif e.event_type is EventType.ANSWER_SUBMITTED:
+            submitted = cast(eventtypes.AnswerSubmitted, e.payload)
             c.execute(
                 "UPDATE gate_questions SET status=?,answer=?,answered_at=? "
                 "WHERE execution_id=? AND question_id=?",
                 (
-                    e.payload.status,
-                    e.payload.answer,
+                    submitted.status,
+                    submitted.answer,
                     e.occurred_at,
                     e.execution_id,
-                    e.payload.question_id,
+                    submitted.question_id,
                 ),
             )
 
     # --- reads ---
-    def gate_questions(self, execution_id: str) -> list[dict]:
+    def gate_questions(self, execution_id: str) -> list[dict[str, Any]]:
         """The gate read-model for one run: every question with its current status
         (pending / answered / skipped). The surface reads it to know what to ask;
         resume reads it to know whether the gate is satisfied."""
@@ -297,7 +303,7 @@ class EventStore:
         return [self._row_to_event(r) for r in rows]
 
     @staticmethod
-    def _row_to_event(r) -> Event:
+    def _row_to_event(r: tuple[Any, ...]) -> Event:
         et = EventType(r[0])
         return Event(
             event_type=et,
@@ -311,13 +317,13 @@ class EventStore:
             seq=r[8],
         )
 
-    def jobs(self) -> list[dict]:
+    def jobs(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT job_id,label,created_at FROM jobs ORDER BY created_at, job_id"
         )
         return [{"job_id": r[0], "label": r[1], "created_at": r[2]} for r in rows]
 
-    def executions(self, job_id: str | None = None) -> list[dict]:
+    def executions(self, job_id: str | None = None) -> list[dict[str, Any]]:
         if job_id is None:
             rows = self._conn.execute(
                 "SELECT execution_id,workflow_name,input_type,job_id,status,commit_hash,"
@@ -342,7 +348,7 @@ class EventStore:
             for r in rows
         ]
 
-    def execution(self, execution_id: str) -> dict | None:
+    def execution(self, execution_id: str) -> dict[str, Any] | None:
         r = self._conn.execute(
             "SELECT execution_id,workflow_name,input_type,job_id,status,commit_hash,branch,"
             "engine_version,created_at FROM workflow_executions WHERE execution_id=?",

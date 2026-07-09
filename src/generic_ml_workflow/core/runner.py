@@ -116,7 +116,9 @@ def run_executable(
     # 3. run -- either a built-in body the engine ships, or a user subprocess
     start = time.monotonic()
     if builtin_bodies.is_builtin(spec.entrypoint):
-        returncode, stdout, stderr = _run_builtin(spec, run_dir, inputs, provider_instance)
+        returncode, stdout, stderr = _run_builtin(
+            spec, run_dir, inputs, provider_instance, spec.entrypoint
+        )
     else:
         argv = _resolve_entrypoint(spec.entrypoint)
         try:
@@ -156,13 +158,14 @@ def _run_builtin(
     run_dir: Path,
     inputs: dict[str, object],
     provider_instance: dict[str, object] | None,
+    entrypoint: str,
 ) -> tuple[int, str, str]:
     """Run an engine-shipped body. Today only ``fetch``: read the step's ``path``
     input from the bound provider instance, host-pinned, and write the response to
     the step's first declared output. A misconfigured step raises ``RunnerError`` (a
     setup error); a refused/failed fetch returns a non-zero result (a runtime
     failure), both surfacing as a failed step. The token stays in-process."""
-    name = builtin_bodies.builtin_name(spec.entrypoint)
+    name = builtin_bodies.builtin_name(entrypoint)
     if name != "fetch":
         raise RunnerError(f"step '{spec.id}': unknown builtin '{name}'")
     path_value = inputs.get("path")

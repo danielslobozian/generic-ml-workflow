@@ -62,7 +62,9 @@ class DependencyReport:
         return tuple(s for s in self.statuses if not s.present)
 
 
-def _probe(executable: str, args: tuple[str, ...] = ("--version",), timeout: float = 15.0):
+def _probe(
+    executable: str, args: tuple[str, ...] = ("--version",), timeout: float = 15.0
+) -> tuple[bool, str | None]:
     """Return (present, version_or_None). Never raises -- any failure is 'absent'."""
     path = shutil.which(executable)
     if path is None:
@@ -96,7 +98,7 @@ _MANDATORY = (
 
 def check() -> DependencyReport:
     """Probe every mandatory dependency. Pure of side effects; never raises."""
-    statuses = []
+    statuses: list[DependencyStatus] = []
     for name, exe, remedy in _MANDATORY:
         present, version = _probe(exe)
         statuses.append(

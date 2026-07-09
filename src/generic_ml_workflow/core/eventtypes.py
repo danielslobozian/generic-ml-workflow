@@ -31,7 +31,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar
+from typing import Any, ClassVar
 
 
 class EventType(str, Enum):
@@ -55,18 +55,22 @@ class EventType(str, Enum):
     PROBE_RECORDED = "probe.recorded"
 
 
+@dataclass(frozen=True)
 class Payload:
     """Base for typed event payloads. Subclasses are frozen dataclasses whose
     fields *are* the declared schema of one event type. ``event_type`` ties the
-    bean to its enum member; ``to_json``/``from_json`` cross the envelope boundary."""
+    bean to its enum member; ``to_json``/``from_json`` cross the envelope boundary.
+
+    Payload itself is a (field-less) frozen dataclass so the shared ``to_json`` /
+    ``from_json`` can call ``dataclasses.asdict``/``fields`` on ``self``/``cls``."""
 
     event_type: ClassVar[EventType]
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_json(cls, data: dict):
+    def from_json(cls, data: dict[str, Any]) -> Payload:
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = set(data) - fields
         if unknown:
@@ -202,7 +206,7 @@ class ArtifactCreated(Payload):
 class QuestionsAsked(Payload):
     event_type = EventType.QUESTIONS_ASKED
     step_name: str
-    questions: tuple  # list of {id, text, blocking}; kept generic for the gate
+    questions: tuple[dict[str, object], ...]  # list of {id, text, blocking}; generic for the gate
 
 
 @dataclass(frozen=True)
@@ -261,13 +265,15 @@ assert set(_REGISTRY) == set(EventType), (
 
 
 def bean_for(event_type: EventType | str) -> type[Payload]:
-    """The payload bean class for a type. Raises KeyError on an unknown type."""
-    if isinstance(event_type, str):
-        event_type = EventType(event_type)
-    return _REGISTRY[event_type]
+    """The payload bean class for a type. Raises ValueError on an unknown type.
+
+    ``EventType`` subclasses ``str``, so ``EventType(x)`` normalizes both a raw
+    string value and an existing enum member to the member (an ``isinstance(...,
+    str)`` guard would always be true -- and pyright flags it as unnecessary)."""
+    return _REGISTRY[EventType(event_type)]
 
 
-def parse_payload(event_type: EventType | str, data: dict) -> Payload:
+def parse_payload(event_type: EventType | str, data: dict[str, Any]) -> Payload:
     """JSON dict -> the typed bean for the type. Fails loudly on a bad shape."""
     return bean_for(event_type).from_json(data)
 
@@ -277,7 +283,7 @@ def event_types() -> list[str]:
     return [t.value for t in EventType]
 
 
-def describe(event_type: EventType | str) -> dict:
+def describe(event_type: EventType | str) -> dict[str, Any]:
     """Self-description: the structure of one event type (the 'get schema' endpoint).
     Returns the type and its payload fields with their declared annotations."""
     bean = bean_for(event_type)

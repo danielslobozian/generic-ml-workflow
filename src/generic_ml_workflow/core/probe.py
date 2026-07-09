@@ -19,6 +19,8 @@ failed probe's truth is whatever the client said, not our gloss on it.
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from generic_ml_workflow.core import eventtypes as et
@@ -47,7 +49,7 @@ def run_probe(
     mode: str = "cache",
     timeout: float = 120.0,
     gmlcache: str = "gmlcache",
-    _runner=None,
+    _runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> et.ProbeRecorded:
     """Take one tiny shot for ``resolution`` and return its verdict.
 

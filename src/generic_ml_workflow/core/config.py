@@ -30,8 +30,10 @@ import os
 import sys
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from generic_ml_workflow.core import paths as paths_mod
 from generic_ml_workflow.core.contract import Tier
@@ -82,7 +84,7 @@ def _defaults() -> dict[str, object]:
     }
 
 
-def _read_file(path: Path) -> dict:
+def _read_file(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
@@ -96,7 +98,7 @@ def load(
     config_file: Path | None = None,
     *,
     session: dict[str, object] | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> Settings:
     """Resolve the effective settings.
 
@@ -108,7 +110,7 @@ def load(
     env = os.environ if env is None else env
     session = session or {}
 
-    doc: dict = {}
+    doc: dict[str, Any] = {}
     loaded: Path | None = None
     if cfg_path.is_file():
         doc = _read_file(cfg_path)
@@ -123,9 +125,9 @@ def load(
         if env.get(env_var):
             values[name], sources[name] = env[env_var], "env"
             continue
-        sect = doc.get(section)
-        if isinstance(sect, dict) and key in sect:
-            raw = sect[key]
+        section_table = doc.get(section)
+        if isinstance(section_table, dict) and key in section_table:
+            raw = cast(dict[str, Any], section_table)[key]
             if not isinstance(raw, str) or not raw.strip():
                 raise ConfigError(
                     f"{cfg_path}: [{section}] {key} must be a non-empty string, got {raw!r}"
@@ -138,9 +140,9 @@ def load(
         values[name] = Path(str(values[name])).expanduser()
 
     return Settings(
-        flows_dir=values["flows_dir"],
-        state_dir=values["state_dir"],
-        workspace_dir=values["workspace_dir"],
+        flows_dir=cast(Path, values["flows_dir"]),
+        state_dir=cast(Path, values["state_dir"]),
+        workspace_dir=cast(Path, values["workspace_dir"]),
         banner=str(values["banner"]),
         sources=sources,
         config_file=loaded,
@@ -175,14 +177,15 @@ def load_tiers(config_file: Path | None = None) -> dict[Tier, Resolution]:
 
     by_name = {t.value: t for t in Tier}
     resolutions: dict[Tier, Resolution] = {}
-    for name, table in raw.items():
+    for name, table in cast(dict[str, Any], raw).items():
         if name not in by_name:
             continue  # forward-compat: ignore tier names this engine doesn't know
         if not isinstance(table, dict):
             raise ConfigError(f"{cfg_path}: [tiers.{name}] must be a table")
-        client = table.get("client")
-        model = table.get("model")
-        effort = table.get("effort")
+        tier_fields = cast(dict[str, Any], table)
+        client = tier_fields.get("client")
+        model = tier_fields.get("model")
+        effort = tier_fields.get("effort")
         if not isinstance(client, str) or not client.strip():
             raise ConfigError(f"{cfg_path}: [tiers.{name}] needs a non-empty 'client'")
         if not isinstance(model, str) or not model.strip():
@@ -332,15 +335,15 @@ def load_providers(
     alias with no configured instance raises :class:`ConfigError`."""
     bindings = bindings or {}
     cfg_path = config_file if config_file is not None else paths_mod.config_path()
-    config_doc = _read_file(cfg_path) if cfg_path.is_file() else {}
-    creds_doc: dict = {}
+    config_doc: dict[str, Any] = _read_file(cfg_path) if cfg_path.is_file() else {}
+    creds_doc: dict[str, Any] = {}
     if credentials_file and credentials_file.is_file():
         _ensure_private(credentials_file)
         creds_doc = _read_file(credentials_file)
 
-    def kinds_of(doc: dict) -> dict:
+    def kinds_of(doc: dict[str, Any]) -> dict[str, Any]:
         raw = doc.get("providers")
-        return raw if isinstance(raw, dict) else {}
+        return cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
 
     config_providers = kinds_of(config_doc)
     creds_providers = kinds_of(creds_doc)
@@ -349,10 +352,12 @@ def load_providers(
     kinds: set[str] = set()
     all_kinds = set(config_providers) | set(creds_providers)
     for kind in all_kinds:
-        cfg_aliases = config_providers.get(kind, {})
-        cred_aliases = creds_providers.get(kind, {})
-        if not isinstance(cfg_aliases, dict) or not isinstance(cred_aliases, dict):
+        cfg_aliases_raw = config_providers.get(kind, {})
+        cred_aliases_raw = creds_providers.get(kind, {})
+        if not isinstance(cfg_aliases_raw, dict) or not isinstance(cred_aliases_raw, dict):
             raise ConfigError(f"[providers.{kind}] must be a table of named instances")
+        cfg_aliases = cast(dict[str, Any], cfg_aliases_raw)
+        cred_aliases = cast(dict[str, Any], cred_aliases_raw)
         alias_names = set(cfg_aliases) | set(cred_aliases)
         if not alias_names:
             continue
@@ -369,9 +374,9 @@ def load_providers(
         else:
             chosen = sorted(alias_names)[0]
         merged: dict[str, object] = {}
-        for src in (cfg_aliases.get(chosen, {}), cred_aliases.get(chosen, {})):
-            if isinstance(src, dict):
-                merged.update(src)
+        for source_table in (cfg_aliases.get(chosen, {}), cred_aliases.get(chosen, {})):
+            if isinstance(source_table, dict):
+                merged.update(cast(dict[str, object], source_table))
         if merged:
             instances[kind] = merged
             kinds.add(kind)

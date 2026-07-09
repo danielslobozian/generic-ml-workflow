@@ -40,3 +40,6 @@ credentials.toml
 # not be committed (it would reintroduce the very leak it checks for).
 /setup-repo.sh
 /secret-audit.sh
+
+# Coverage reports (written by nox coverage/green + Sonar)
+coverage.xml

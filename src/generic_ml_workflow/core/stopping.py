@@ -23,10 +23,11 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
+from typing import Any
 
 
-def _group_kwargs() -> dict:
+def _group_kwargs() -> dict[str, Any]:
     """Start the child in its own process group/session so one signal reaches the
     whole tree -- no orphaned grandchildren."""
     if os.name == "posix":
@@ -34,7 +35,7 @@ def _group_kwargs() -> dict:
     return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+def _terminate(proc: subprocess.Popen[str]) -> None:
     """Best-effort teardown of a child and its group. A race where it already
     exited is fine -- that is the outcome we wanted."""
     if proc.poll() is not None:
@@ -56,7 +57,7 @@ class StopControl:
     def __init__(self) -> None:
         self._requested = threading.Event()
         self._lock = threading.Lock()
-        self._child: subprocess.Popen | None = None
+        self._child: subprocess.Popen[str] | None = None
 
     def request(self) -> None:
         """Ask the run to stop. Sets the flag (the loop stops at the next boundary)
@@ -72,7 +73,7 @@ class StopControl:
         return self._requested.is_set()
 
     @contextlib.contextmanager
-    def watching(self, child: subprocess.Popen) -> Iterator[None]:
+    def watching(self, child: subprocess.Popen[str]) -> Generator[None]:
         """While a step's child runs, register it so ``request()`` can reach it. If a
         stop was already requested before registration, tear it down at once."""
         with self._lock:
@@ -89,12 +90,12 @@ class StopControl:
 def run_supervised(
     argv: list[str],
     *,
-    cwd,
+    cwd: str | os.PathLike[str],
     timeout: float | None,
     stop: StopControl | None = None,
     input_text: str | None = None,
     env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run a child to completion, killable mid-flight by ``stop``. A drop-in for
     ``subprocess.run(capture_output=True, text=True)``: returns a CompletedProcess,
     raises ``FileNotFoundError`` for a missing executable and ``TimeoutExpired`` on
@@ -120,4 +121,6 @@ def run_supervised(
             _terminate(proc)
             proc.communicate()  # reap the killed child
             raise
-    return subprocess.CompletedProcess(argv, proc.returncode, out or "", err or "")
+    # communicate() has reaped the child, so returncode is set (never None here).
+    exit_code = proc.returncode if proc.returncode is not None else 0
+    return subprocess.CompletedProcess(argv, exit_code, out or "", err or "")

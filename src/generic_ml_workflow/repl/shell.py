@@ -38,12 +38,14 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
@@ -67,6 +69,13 @@ from generic_ml_workflow.repl import banner
 
 ROADMAP_URL = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/docs/ROADMAP.md"
 
+# The background work a launch runs: given the engine, a progress reporter, and the
+# stop control, it drives one run (or resume) to completion.
+_ProgressReporter = Callable[["orchestrator.RunProgress"], None]
+_LaunchWork = Callable[
+    ["orchestrator.Orchestrator", _ProgressReporter, "stopping.StopControl"], None
+]
+
 
 @dataclass
 class _Verb:
@@ -75,36 +84,32 @@ class _Verb:
     help: str
 
 
-def _stub(slice_id: str, what: str) -> Callable[["Repl", list[str]], bool]:
-    """A verb that exists but honestly does not work yet."""
-
-    def handler(repl: "Repl", args: list[str]) -> bool:
-        repl._write(f"not yet -- {what} arrives with slice {slice_id}. see the roadmap:")
-        repl._write(f"  {ROADMAP_URL}")
-        return True
-
-    return handler
-
-
 class _CommandCompleter(Completer):
-    """Bridges prompt_toolkit to the REPL's pure completion logic. It asks the Repl
-    for candidate values (``_completions``) and a one-line description per value
-    (``_completion_meta``), so the menu shows commands one-per-line with a meta
-    column -- the same ``command -> what it does`` shape as ``/help``."""
+    """Bridges prompt_toolkit to the REPL's pure completion logic. It is handed the
+    Repl's ``_completions`` and ``_completion_meta`` callables (bound methods, so the
+    private logic stays inside the Repl), and renders the menu one-per-line with a
+    meta column -- the same ``command -> what it does`` shape as ``/help``."""
 
-    def __init__(self, repl: "Repl"):
-        self._repl = repl
+    def __init__(
+        self,
+        completions: Callable[[str, int], list[str]],
+        completion_meta: Callable[[str], str],
+    ):
+        self._completions = completions
+        self._completion_meta = completion_meta
 
-    def get_completions(self, document, complete_event):
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
         line = document.text_before_cursor
         word = document.get_word_before_cursor(WORD=True)
         begidx = len(line) - len(word)
-        for value in self._repl._completions(line, begidx):
+        for value in self._completions(line, begidx):
             yield Completion(
                 value,
                 start_position=-len(word),
                 display=value,
-                display_meta=self._repl._completion_meta(value),
+                display_meta=self._completion_meta(value),
             )
 
 
@@ -189,12 +194,12 @@ class Repl:
                 "spend in tokens/usage, per step / execution / job",
             ),
             "export": _Verb(
-                _stub("0.1.2", "exporting a job's documents"),
+                Repl._do_export,
                 "/export",
                 "render a job's documents out of the app",
             ),
             "companion": _Verb(
-                _stub("0.3.1", "the companion surface"),
+                Repl._do_companion,
                 "/companion",
                 "show/hide the companion chat",
             ),
@@ -241,11 +246,11 @@ class Repl:
         keys = KeyBindings()
 
         @keys.add("escape")
-        def _(_event) -> None:
+        def _(_event: object) -> None:
             self._request_stop()
 
-        session = PromptSession(
-            completer=_CommandCompleter(self),
+        session: PromptSession[str] = PromptSession(
+            completer=_CommandCompleter(self._completions, self._completion_meta),
             complete_while_typing=True,
             complete_style=CompleteStyle.COLUMN,
             key_bindings=keys,
@@ -335,6 +340,8 @@ class Repl:
             self._write("session, and the interview returns at next launch.")
             self._write("")
             return
+        # branch 3's guard chain (each ask gated on the previous) proves these are set.
+        assert flows is not None and state is not None
         text = config.initial_config_text(flows, state, ws, banner=self._banner_style)
         config.write_initial_config(cfg_path, text)
         for p in (flows, state, ws):
@@ -454,6 +461,14 @@ class Repl:
             return None
         return self.settings.flows_dir
 
+    def _require_settings(self) -> config.Settings:
+        """The resolved settings, asserting the startup invariant. Internal helpers
+        that run only after a settings-guarded entry point (``_flows_dir`` /
+        ``_open_store``) use this instead of a None check at every field access."""
+        if self.settings is None:
+            raise RuntimeError("settings not resolved (startup did not run)")
+        return self.settings
+
     def _open_store(self) -> "events.EventStore | None":
         """Open the event store at the configured state dir's db path. The store is
         read-only here (nothing emits run events until /run, slice 0.0.5), so an
@@ -489,10 +504,12 @@ class Repl:
         else:
             self._write("which workflow?")
             for d in runnable:
-                self._write(f"  {d.name} <{d.workflow.input_type.value}>")
+                if d.workflow is not None:
+                    self._write(f"  {d.name} <{d.workflow.input_type.value}>")
             self._write("run one with '/run <name>'.")
             return True
         workflow = match.workflow
+        assert workflow is not None  # runnable is filtered to loadable workflows
         # validate before asking anything
         result = workflow.validate()
         if not result.ok:
@@ -554,13 +571,15 @@ class Repl:
             return True
         return False
 
-    def _parse_tier_overrides(self, workflow, tokens: list[str]) -> dict | None:
+    def _parse_tier_overrides(
+        self, workflow: contract.Workflow, tokens: list[str]
+    ) -> dict[str, contract.Tier] | None:
         """Parse ``<step>=<tier>`` tokens into ``{step_id: Tier}``, validated against
         the workflow. Returns the map (possibly empty) or ``None`` after reporting a
         problem -- a bad override must stop the run, not be silently dropped."""
         steps_by_id = {s.id: s for s in workflow.steps}
         tiers_by_name = {t.value: t for t in contract.Tier}
-        overrides: dict = {}
+        overrides: dict[str, contract.Tier] = {}
         for tok in tokens:
             if "=" not in tok:
                 self._write(f"  ! bad override '{tok}' -- use '<step>=<tier>' (e.g. analyze=high).")
@@ -584,18 +603,26 @@ class Repl:
             overrides[step_id] = tier
         return overrides
 
-    def _execute_run(self, workflow, run_inputs, flows, overrides=None, mode=None) -> None:
+    def _execute_run(
+        self,
+        workflow: contract.Workflow,
+        run_inputs: dict[str, str],
+        flows: Path,
+        overrides: dict[str, contract.Tier] | None = None,
+        mode: orchestrator.RunMode | None = None,
+    ) -> None:
         mode = mode or orchestrator.RunMode.FULL_AUTO
+        settings = self._require_settings()
         st = stamp.read_stamp(flows)
         if not st.versioned:
             self._write("  (flows folder is unversioned -- recording the run as such)")
         shot_config = self._build_shot_config()
         provider_instances, provider_kinds = config.load_providers(
-            self.settings.config_file,
-            self.settings.state_dir / "credentials.toml",
+            settings.config_file,
+            settings.state_dir / "credentials.toml",
             bindings=workflow.provider_aliases(),
         )
-        provider_specs = discovery.discover_providers(self.settings.flows_dir)
+        provider_specs = discovery.discover_providers(settings.flows_dir)
         if overrides:
             for step_id, tier in overrides.items():
                 self._write(f"  tier override: {step_id} -> {tier.value}")
@@ -614,7 +641,11 @@ class Repl:
         else:
             self._write(f"running '{workflow.name}' ({step_count} steps){mode_note}...")
 
-        def do_run(orch, progress, stop) -> None:
+        def do_run(
+            orch: orchestrator.Orchestrator,
+            progress: _ProgressReporter,
+            stop: stopping.StopControl,
+        ) -> None:
             orch.run(
                 workflow,
                 run_inputs,
@@ -631,7 +662,7 @@ class Repl:
 
         self._launch(f"run-{workflow.name}", do_run)
 
-    def _launch(self, label: str, work) -> None:
+    def _launch(self, label: str, work: _LaunchWork) -> None:
         """Run ``work(orch, progress, stop)`` on the background worker (real terminal)
         or synchronously (scripted/CI). Owns the worker, the per-run stop control, and
         the event store's whole lifetime -- a SQLite connection is thread-bound, so it
@@ -639,12 +670,13 @@ class Repl:
         report_progress = self._run_progress_reporter()
         stop = stopping.StopControl()
         self._active_stop = stop
+        settings = self._require_settings()
 
         def worker() -> None:
             store = self._open_store()
             if store is None:
                 return
-            orch = orchestrator.Orchestrator(store, self.settings.workspace_dir)
+            orch = orchestrator.Orchestrator(store, settings.workspace_dir)
             try:
                 work(orch, report_progress, stop)
             except orchestrator.OrchestratorError as exc:
@@ -696,10 +728,12 @@ class Repl:
             self._write(f"can't resume: workflow '{wanted}' isn't in {flows} anymore.")
             return True
         workflow = match.workflow
+        assert workflow is not None  # the discover_workflows filter above requires d.workflow
+        settings = self._require_settings()
         shot_config = self._build_shot_config()
         provider_instances, _kinds = config.load_providers(
-            self.settings.config_file,
-            self.settings.state_dir / "credentials.toml",
+            settings.config_file,
+            settings.state_dir / "credentials.toml",
             bindings=workflow.provider_aliases(),
         )
         if self._rich_input:
@@ -710,7 +744,11 @@ class Repl:
         else:
             self._write(f"resuming '{wanted}' ({execution_id[:12]})...")
 
-        def do_resume(orch, progress, stop) -> None:
+        def do_resume(
+            orch: orchestrator.Orchestrator,
+            progress: _ProgressReporter,
+            stop: stopping.StopControl,
+        ) -> None:
             orch.resume(
                 execution_id,
                 workflow,
@@ -792,11 +830,12 @@ class Repl:
         finally:
             store.close()
 
-    def _sweep_questions(self, store, flows, execution_id) -> None:
+    def _sweep_questions(self, store: events.EventStore, flows: Path, execution_id: str) -> None:
         """Delete the transport questions courier file(s) for this run -- the gate
         lifted them into events; the file is ephemeral. Best-effort housekeeping:
         correctness doesn't depend on it (resume skips the completed gate step), so a
         missing file or path is ignored."""
+        settings = self._require_settings()
         exec_row = store.execution(execution_id)
         if exec_row is None:
             return
@@ -818,18 +857,14 @@ class Repl:
             if qout is None:
                 continue
             courier = (
-                self.settings.workspace_dir
-                / "executions"
-                / execution_id
-                / step_name
-                / qout.filename
+                settings.workspace_dir / "executions" / execution_id / step_name / qout.filename
             )
             try:
                 courier.unlink()
             except OSError:
                 pass
 
-    def _run_progress_reporter(self) -> Callable[["orchestrator.RunProgress"], None]:
+    def _run_progress_reporter(self) -> _ProgressReporter:
         """Render the engine's advancement notifications onto the prompt as they
         happen. The reporter is the surface's; the engine knows nothing of it beyond
         calling it (DESIGN.md invariant 24). Thin-slice rendering: one line per
@@ -875,7 +910,7 @@ class Repl:
 
         return report
 
-    def _build_shot_config(self):
+    def _build_shot_config(self) -> orchestrator.ShotConfig | None:
         """Build the shot resolution config from the user's ``[tiers]`` mapping.
 
         Returns ``None`` when no tiers are configured -- a shot step then stops
@@ -954,11 +989,13 @@ class Repl:
         finally:
             store.close()
 
-    def _find_execution_prefix(self, store, prefix: str):
+    def _find_execution_prefix(
+        self, store: events.EventStore, prefix: str
+    ) -> dict[str, Any] | None:
         matches = [e for e in store.executions() if e["execution_id"].startswith(prefix)]
         return matches[0] if len(matches) == 1 else None
 
-    def _render_replay(self, store, row) -> None:
+    def _render_replay(self, store: events.EventStore, row: dict[str, Any]) -> None:
         full = store.execution(row["execution_id"]) or row
         self._write(f"execution {full['execution_id']}")
         stamp = f"commit {full['commit']}" if full.get("commit") else "unversioned"
@@ -1152,6 +1189,18 @@ class Repl:
 
     def _do_quit(self, args: list[str]) -> bool:
         return False
+
+    def _do_export(self, args: list[str]) -> bool:
+        return self._not_yet("0.1.2", "exporting a job's documents")
+
+    def _do_companion(self, args: list[str]) -> bool:
+        return self._not_yet("0.3.1", "the companion surface")
+
+    def _not_yet(self, slice_id: str, what: str) -> bool:
+        """A verb that exists but honestly does not work yet."""
+        self._write(f"not yet -- {what} arrives with slice {slice_id}. see the roadmap:")
+        self._write(f"  {ROADMAP_URL}")
+        return True
 
     # --- completion (pure logic; prompt_toolkit and tests both use it) ---
     def _refresh_workflow_names(self) -> None:
