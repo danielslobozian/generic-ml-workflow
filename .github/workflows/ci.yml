@@ -14,6 +14,14 @@ concurrency:
 permissions:
   contents: read
 
+# CI is a thin caller of nox (see noxfile.py): every gate below is a nox session,
+# so the check that runs here is byte-for-byte the one a developer runs locally via
+# `nox -s green`. nox builds its own hermetic envs via the uv backend, synced from
+# the committed uv.lock, so a dependency can only move via a deliberate
+# `uv lock --upgrade` -- never at a random upstream release.
+env:
+  UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+
 jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python-version }})
@@ -31,13 +39,27 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package (with dev extras)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Install nox + uv
+        run: python -m pip install --upgrade pip nox "uv==0.11.17"
 
-      - name: Run tests
-        run: python -m pytest
+      - name: Run tests (nox)
+        run: nox --python ${{ matrix.python-version }} -s tests
+
+  # A single, stable check that rolls up the whole test matrix, so branch
+  # protection can require "tests" instead of every matrix job name.
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ always() }}
+    steps:
+      - name: All test matrix jobs passed
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "test matrix did not pass: ${{ needs.test.result }}"
+            exit 1
+          fi
+          echo "all test matrix jobs passed"
 
   lint:
     name: lint (ruff)
@@ -50,13 +72,42 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install ruff
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff
+      - name: Install nox + uv
+        run: python -m pip install --upgrade pip nox "uv==0.11.17"
 
-      - name: Lint
-        run: ruff check .
+      - name: Lint + format check (nox)
+        run: nox -s lint
 
-      - name: Format check
-        run: ruff format --check .
+  typecheck:
+    name: typecheck (pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install nox + uv
+        run: python -m pip install --upgrade pip nox "uv==0.11.17"
+
+      - name: Type check (nox)
+        run: nox -s typecheck
+
+  coverage:
+    name: coverage (>=80%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install nox + uv
+        run: python -m pip install --upgrade pip nox "uv==0.11.17"
+
+      - name: Coverage floor (nox)
+        run: nox -s coverage

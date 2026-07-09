@@ -36,10 +36,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any, cast
 
 from generic_ml_workflow.core import runner, shotrunner
 from generic_ml_workflow.core.contract import (
     OutputKind,
+    ProviderSpec,
     Requirement,
     StepNature,
     StepSpec,
@@ -99,7 +101,7 @@ class RunProgress:
     step_number: int | None = None
     step_count: int | None = None
     reason: str | None = None
-    questions: tuple = ()  # the gate's questions, carried on RUN_BLOCKED
+    questions: tuple[dict[str, object], ...] = ()  # the gate's questions, on RUN_BLOCKED
 
 
 # A surface supplies this to receive live advancement; the engine calls it at each
@@ -117,11 +119,11 @@ class RunReport:
 
     execution_id: str
     completed: bool
-    steps_run: list[str] = field(default_factory=list)
+    steps_run: list[str] = field(default_factory=list[str])
     stopped_reason: str | None = None  # why a run stopped early (e.g. an ML step)
     failed_step: str | None = None
     paused_after: str | None = None  # full-manual checkpoint: the step we paused after
-    awaiting: tuple = ()  # questions gate: the questions the run is blocked on
+    awaiting: tuple[dict[str, object], ...] = ()  # the questions the run is blocked on
     awaiting_file: Path | None = None  # internal: the produced questions file (to parse/sweep)
 
 
@@ -136,7 +138,7 @@ class ShotConfig:
 
     resolutions: dict[Tier, shotrunner.Resolution]
     mode: str = "cache"
-    run_shot: object = staticmethod(shotrunner.run_shot)
+    run_shot: Callable[..., shotrunner.ShotResult] = staticmethod(shotrunner.run_shot)
 
     def resolve(self, tier: Tier) -> shotrunner.Resolution:
         if tier not in self.resolutions:
@@ -153,7 +155,7 @@ def warm_up(
     config_values: dict[str, str] | None = None,
     credentials: set[str] | None = None,
     providers: set[str] | None = None,
-    provider_specs: dict | None = None,
+    provider_specs: dict[str, ProviderSpec] | None = None,
     provider_instances: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Token-free readiness check before step one fires (DESIGN.md SS7).
@@ -200,7 +202,7 @@ class Orchestrator:
     def __init__(self, store: EventStore, workspace: Path):
         self._store = store
         self._workspace = Path(workspace)
-        self._provider_instances: dict[str, dict[str, str]] = {}
+        self._provider_instances: dict[str, dict[str, object]] = {}
 
     def run(
         self,
@@ -212,8 +214,8 @@ class Orchestrator:
         config_values: dict[str, str] | None = None,
         credentials: set[str] | None = None,
         providers: set[str] | None = None,
-        provider_instances: dict[str, dict[str, str]] | None = None,
-        provider_specs: dict | None = None,
+        provider_instances: dict[str, dict[str, object]] | None = None,
+        provider_specs: dict[str, ProviderSpec] | None = None,
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode = RunMode.FULL_AUTO,
@@ -277,16 +279,16 @@ class Orchestrator:
 
     def _walk(
         self,
-        workflow,
-        execution_id,
-        context,
+        workflow: Workflow,
+        execution_id: str,
+        context: dict[str, object],
         *,
-        completed,
-        tier_overrides,
-        shot_config,
-        mode,
-        progress,
-        stop,
+        completed: set[str],
+        tier_overrides: dict[str, Tier] | None,
+        shot_config: ShotConfig | None,
+        mode: RunMode,
+        progress: ProgressReporter,
+        stop: StopControl | None,
     ) -> RunReport:
         """Walk the steps once -- shared by a fresh ``run`` (empty context, nothing
         completed) and a ``resume`` (context rebuilt from the log, prior steps in
@@ -359,6 +361,8 @@ class Orchestrator:
                 )
             )
             if step.nature is StepNature.INTERPRETABLE:
+                # guarded above: an interpretable step with no shot_config already returned.
+                assert shot_config is not None
                 step_ok = self._run_shot(
                     step, execution_id, context, bindings, report, shot_config, tier_overrides, stop
                 )
@@ -459,7 +463,7 @@ class Orchestrator:
         shot_config: ShotConfig | None = None,
         tier_overrides: dict[str, Tier] | None = None,
         mode: RunMode | None = None,
-        provider_instances: dict[str, dict[str, str]] | None = None,
+        provider_instances: dict[str, dict[str, object]] | None = None,
         progress: ProgressReporter = _ignore_progress,
         stop: StopControl | None = None,
     ) -> RunReport:
@@ -524,22 +528,27 @@ class Orchestrator:
         mode = RunMode.FULL_AUTO
         for event in self._store.replay(execution_id):
             if event.event_type is et.EventType.WORKFLOW_EXECUTION_STARTED:
-                mode = RunMode(getattr(event.payload, "mode", RunMode.FULL_AUTO.value))
+                started = cast(et.WorkflowExecutionStarted, event.payload)
+                mode = RunMode(started.mode)
             elif event.event_type is et.EventType.RUN_INPUT_PROVIDED:
-                context[event.payload.name] = event.payload.value
+                provided = cast(et.RunInputProvided, event.payload)
+                context[provided.name] = provided.value
             elif event.event_type is et.EventType.ARTIFACT_CREATED:
-                context[event.payload.name] = Path(event.payload.path)
+                artifact = cast(et.ArtifactCreated, event.payload)
+                context[artifact.name] = Path(artifact.path)
             elif event.event_type is et.EventType.STEP_COMPLETED:
-                completed.add(event.payload.step_name)
+                step_done = cast(et.StepCompleted, event.payload)
+                completed.add(step_done.step_name)
             elif event.event_type is et.EventType.ANSWER_SUBMITTED:
                 # a gate answer re-enters the context under its question id (B):
                 # a downstream ANSWER port reads it by that name.
-                if event.payload.status == "answered":
-                    context[event.payload.question_id] = event.payload.answer
+                submitted = cast(et.AnswerSubmitted, event.payload)
+                if submitted.status == "answered":
+                    context[submitted.question_id] = submitted.answer
         return context, completed, mode
 
     @staticmethod
-    def _read_questions(path: Path) -> tuple[dict, ...]:
+    def _read_questions(path: Path) -> tuple[dict[str, object], ...]:
         """Parse a step's `questions` output into the structured set the gate records:
         a JSON list of ``{id?, text, blocking?}``. Fails loudly on a malformed file --
         a gate the engine can't read is an authoring error, not something to paper
@@ -550,22 +559,35 @@ class Orchestrator:
             raise OrchestratorError(f"questions file '{path}' is not valid JSON: {exc}") from exc
         if not isinstance(raw, list) or not raw:
             raise OrchestratorError(f"questions file '{path}' must be a non-empty JSON list")
-        questions: list[dict] = []
-        for index, item in enumerate(raw, start=1):
-            if not isinstance(item, dict) or "text" not in item:
+        questions: list[dict[str, object]] = []
+        for index, item in enumerate(cast(list[Any], raw), start=1):
+            if not isinstance(item, dict):
+                raise OrchestratorError(
+                    f"questions file '{path}': item {index} needs at least a 'text' field"
+                )
+            entry = cast(dict[str, Any], item)
+            if "text" not in entry:
                 raise OrchestratorError(
                     f"questions file '{path}': item {index} needs at least a 'text' field"
                 )
             questions.append(
                 {
-                    "id": str(item.get("id", f"q{index}")),
-                    "text": str(item["text"]),
-                    "blocking": bool(item.get("blocking", True)),
+                    "id": str(entry.get("id", f"q{index}")),
+                    "text": str(entry["text"]),
+                    "blocking": bool(entry.get("blocking", True)),
                 }
             )
         return tuple(questions)
 
-    def _run_step(self, step, execution_id, context, bindings, report, stop=None) -> bool:
+    def _run_step(
+        self,
+        step: StepSpec,
+        execution_id: str,
+        context: dict[str, object],
+        bindings: dict[tuple[str, str], str],
+        report: RunReport,
+        stop: StopControl | None = None,
+    ) -> bool:
         self._store.emit(
             et.StepStarted(step_name=step.id), execution_id=execution_id, step_name=step.id
         )
@@ -625,14 +647,14 @@ class Orchestrator:
 
     def _run_shot(
         self,
-        step,
-        execution_id,
-        context,
-        bindings,
-        report,
-        shot_config,
-        tier_overrides=None,
-        stop=None,
+        step: StepSpec,
+        execution_id: str,
+        context: dict[str, object],
+        bindings: dict[tuple[str, str], str],
+        report: RunReport,
+        shot_config: ShotConfig,
+        tier_overrides: dict[str, Tier] | None = None,
+        stop: StopControl | None = None,
     ) -> bool:
         tier_overrides = tier_overrides or {}
         self._store.emit(
@@ -653,7 +675,7 @@ class Orchestrator:
                 actor="user",
             )
         # context prefix: the cap/methodology -- run-agnostic by construction
-        prefix_parts = []
+        prefix_parts: list[str] = []
         if step.cap:
             prefix_parts.append(f"You are: {step.cap}.")
         if step.methodology:
@@ -746,7 +768,9 @@ class Orchestrator:
         report.steps_run.append(step.id)
         return True
 
-    def _resolve_inputs(self, step: StepSpec, context: dict, bindings: dict) -> dict:
+    def _resolve_inputs(
+        self, step: StepSpec, context: dict[str, object], bindings: dict[tuple[str, str], str]
+    ) -> dict[str, object]:
         """Map each input port to a concrete value from the context. Artifact ports
         follow their binding to a context product; run-input ports read their own
         name (seeded at warm-up). Credential ports never carry a token -- presence
@@ -785,5 +809,5 @@ class Orchestrator:
         return env or None
 
     @staticmethod
-    def _binding_map(workflow: Workflow) -> dict:
+    def _binding_map(workflow: Workflow) -> dict[tuple[str, str], str]:
         return {(b.step_id, b.port): b.product for b in workflow.bindings}

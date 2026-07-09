@@ -369,4 +369,4 @@ class ResolvedStep:
     spec: StepSpec
     inputs: dict[str, object]  # port name -> resolved value
     output_dir: str
-    output_paths: dict[str, str] = field(default_factory=dict)  # output name -> abs path
+    output_paths: dict[str, str] = field(default_factory=dict[str, str])  # output name -> abs path

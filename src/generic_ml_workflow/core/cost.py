@@ -18,9 +18,10 @@ same projection will then fold across a job's executions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, TypeVar, cast
 
-from generic_ml_workflow.core.eventtypes import EventType
+from generic_ml_workflow.core.events import Event
+from generic_ml_workflow.core.eventtypes import EventType, StepCompleted
 from generic_ml_workflow.core.usage import Usage
 
 
@@ -40,11 +41,20 @@ class ExecutionCost:
     total: Usage
 
 
-def _sum_field(values: Iterable[Optional[float]]) -> Optional[float]:
+_Num = TypeVar("_Num", int, float)
+
+
+def _sum_field(values: Iterable[Optional[_Num]]) -> Optional[_Num]:
     """Sum the values that are known; ``None`` if none are -- unknown stays unknown
-    rather than collapsing to zero."""
-    known = [v for v in values if v is not None]
-    return sum(known) if known else None
+    rather than collapsing to zero. Generic so token fields stay ``int`` and the
+    advisory ``cost_usd`` stays ``float``."""
+    known = [value for value in values if value is not None]
+    if not known:
+        return None
+    total = known[0]
+    for value in known[1:]:
+        total += value
+    return total
 
 
 def _sum_usages(usages: Sequence[Usage]) -> Usage:
@@ -58,14 +68,14 @@ def _sum_usages(usages: Sequence[Usage]) -> Usage:
     )
 
 
-def project(events: Iterable) -> ExecutionCost:
+def project(events: Iterable[Event]) -> ExecutionCost:
     """Fold a step.completed stream into per-step usage rows and their total. Only
     completion events contribute; anything else is ignored."""
     steps: list[StepCost] = []
     for event in events:
         if event.event_type is not EventType.STEP_COMPLETED:
             continue
-        payload = event.payload
+        payload = cast(StepCompleted, event.payload)
         steps.append(
             StepCost(
                 step_name=payload.step_name,

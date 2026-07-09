@@ -45,7 +45,18 @@ Issues = "https://github.com/danielslobozian/generic-ml-workflow/issues"
 Changelog = "https://github.com/danielslobozian/generic-ml-workflow/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov"]
+dev = [
+  "pytest>=7",
+  "pytest-cov",
+  "ruff>=0.6",
+  "pyright>=1.1.380",
+]
+
+[dependency-groups]
+# nox + pre-commit are bootstrap / IDE tooling, not needed inside a hermetic gate
+# env (nox is what *runs* the gates; pre-commit wires git hooks). uv installs the
+# `dev` dependency-group by default on `uv sync`.
+dev = ["nox>=2026.4.10", "pre-commit>=4.6.0"]
 
 [project.scripts]
 gmlworkflow = "generic_ml_workflow.repl.app:main"

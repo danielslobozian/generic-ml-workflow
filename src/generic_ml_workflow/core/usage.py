@@ -16,7 +16,7 @@ not report a number leaves it ``None``, and an envelope with no usage at all yie
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ def _as_float(value: Any) -> Optional[float]:
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def usage_from_envelope(envelope: dict) -> Optional[Usage]:
+def usage_from_envelope(envelope: object) -> Optional[Usage]:
     """Lift normalized usage out of a gmlcache ``run --json`` envelope.
 
     Returns ``None`` when the envelope carries no usage (``"usage"`` absent or
@@ -61,14 +61,15 @@ def usage_from_envelope(envelope: dict) -> Optional[Usage]:
     """
     if not isinstance(envelope, dict):
         return None
-    block = envelope.get("usage")
+    block = cast(dict[str, Any], envelope).get("usage")
     if not isinstance(block, dict):
         return None
+    block_map = cast(dict[str, Any], block)
     return Usage(
-        input_tokens=_as_int(block.get("input_tokens")),
-        output_tokens=_as_int(block.get("output_tokens")),
-        cache_read_tokens=_as_int(block.get("cache_read_tokens")),
-        cache_write_tokens=_as_int(block.get("cache_write_tokens")),
-        reasoning_tokens=_as_int(block.get("reasoning_tokens")),
-        cost_usd=_as_float(block.get("cost_usd")),
+        input_tokens=_as_int(block_map.get("input_tokens")),
+        output_tokens=_as_int(block_map.get("output_tokens")),
+        cache_read_tokens=_as_int(block_map.get("cache_read_tokens")),
+        cache_write_tokens=_as_int(block_map.get("cache_write_tokens")),
+        reasoning_tokens=_as_int(block_map.get("reasoning_tokens")),
+        cost_usd=_as_float(block_map.get("cost_usd")),
     )

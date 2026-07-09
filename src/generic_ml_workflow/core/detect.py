@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -57,17 +58,18 @@ def parse_doctor_output(text: str) -> tuple[ClientStatus, ...]:
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("doctor output is not a JSON list")
-    statuses = []
-    for item in data:
+    statuses: list[ClientStatus] = []
+    for item in cast(list[Any], data):
         if not isinstance(item, dict) or "name" not in item:
             raise ValueError("doctor output entry is not a client object")
+        entry = cast(dict[str, Any], item)
         statuses.append(
             ClientStatus(
-                name=str(item["name"]),
-                present=bool(item.get("present", False)),
-                executable=item.get("executable"),
-                version=item.get("version"),
-                detail=item.get("detail"),
+                name=str(entry["name"]),
+                present=bool(entry.get("present", False)),
+                executable=entry.get("executable"),
+                version=entry.get("version"),
+                detail=entry.get("detail"),
             )
         )
     return tuple(statuses)
@@ -104,6 +106,17 @@ class ModelListing:
     reason: str | None = None
 
 
+def _parse_model(entry: dict[str, Any]) -> ModelInfo:
+    """One model object from a client's ``models`` list -> a typed ``ModelInfo``.
+    Missing keys default (id/name to empty, flags to False)."""
+    return ModelInfo(
+        id=str(entry.get("id", "")),
+        name=str(entry.get("name", "")),
+        default=bool(entry.get("default", False)),
+        current=bool(entry.get("current", False)),
+    )
+
+
 def parse_models_output(text: str) -> tuple[ModelListing, ...]:
     """Parse ``gmlcache models --json`` output into per-client listings.
 
@@ -115,30 +128,26 @@ def parse_models_output(text: str) -> tuple[ModelListing, ...]:
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("models output is not a JSON list")
-    listings = []
-    for item in data:
+    listings: list[ModelListing] = []
+    for item in cast(list[Any], data):
         if not isinstance(item, dict) or "name" not in item:
             raise ValueError("models output entry is not a client object")
-        raw_models = item.get("models")
+        entry = cast(dict[str, Any], item)
+        raw_models = entry.get("models")
         models: tuple[ModelInfo, ...] | None = None
         if isinstance(raw_models, list):
             models = tuple(
-                ModelInfo(
-                    id=str(m.get("id", "")),
-                    name=str(m.get("name", "")),
-                    default=bool(m.get("default", False)),
-                    current=bool(m.get("current", False)),
-                )
-                for m in raw_models
+                _parse_model(cast(dict[str, Any], m))
+                for m in cast(list[Any], raw_models)
                 if isinstance(m, dict)
             )
         listings.append(
             ModelListing(
-                name=str(item["name"]),
-                present=bool(item.get("present", False)),
-                supported=bool(item.get("supported", False)),
+                name=str(entry["name"]),
+                present=bool(entry.get("present", False)),
+                supported=bool(entry.get("supported", False)),
                 models=models,
-                reason=item.get("reason"),
+                reason=entry.get("reason"),
             )
         )
     return tuple(listings)
