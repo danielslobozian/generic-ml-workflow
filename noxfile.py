@@ -130,6 +130,24 @@ def coverage(session: nox.Session) -> None:
 
 
 @nox.session
+def sonar(session: nox.Session) -> None:
+    """Write ``coverage.xml`` for the SonarQube Cloud scanner to ingest (paths are
+    repo-root-relative via ``.coveragerc``, so they resolve against ``src/``). The
+    scanner itself runs in CI (it needs the SONAR_TOKEN); this session only produces
+    the report it reads -- no floor here (the ``coverage`` session owns that gate).
+    """
+    _install(session)
+    session.run(
+        "python",
+        "-m",
+        "pytest",
+        f"--cov={PACKAGE}",
+        "--cov-config=.coveragerc",
+        "--cov-report=xml:coverage.xml",
+    )
+
+
+@nox.session
 def green(session: nox.Session) -> None:
     """The whole local gate in one environment: lint, format, typecheck, tests+coverage."""
     _install(session)

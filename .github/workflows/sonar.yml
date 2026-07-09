@@ -1,0 +1,37 @@
+name: Sonar
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: SonarQube Cloud
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history so Sonar can attribute new code and blame
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install nox + uv
+        run: python -m pip install --upgrade pip nox "uv==0.11.17"
+
+      # Thin caller of nox (see noxfile.py): the `sonar` session writes the
+      # coverage.xml Sonar ingests (path in sonar-project.properties).
+      - name: Coverage report for Sonar (nox)
+        run: nox -s sonar
+
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
