@@ -1,0 +1,62 @@
+# .pre-commit-config.yaml -- the gates that run BEFORE a commit is written.
+#
+# A failing hook rejects the commit, so malformed code can never reach local
+# history (and therefore can never be pushed). Both linters are local hooks backed
+# by the project's own .venv, so no extra environment is created and no network is
+# needed at hook-run time.
+#
+# One-time setup after cloning (builds the .venv, then wires the hooks):
+#   nox -s dev
+#   .venv/bin/pre-commit install
+#   .venv/bin/pre-commit install --hook-type commit-msg
+#
+# Run manually against all files:
+#   .venv/bin/pre-commit run --all-files
+#
+# The hexagonal import contracts (import-linter) arrive with the restructure and
+# get their own hook then; the ruff/pyright/guard gates below are the current bar.
+
+repos:
+  - repo: local
+    hooks:
+      # Gate 1 -- ruff linter
+      - id: ruff-check
+        name: ruff (lint)
+        entry: .venv/bin/ruff check .
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      # Gate 2 -- ruff formatter
+      - id: ruff-format
+        name: ruff (format check)
+        entry: .venv/bin/ruff format --check .
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      # Gate 3 -- static type checking (pyright strict; see pyrightconfig.json).
+      # Zero errors required. `# type: ignore` only for a provably-safe cast that
+      # cannot be expressed in the type system, with a comment explaining why.
+      - id: pyright
+        name: pyright (strict type checking)
+        entry: .venv/bin/pyright --pythonpath .venv/bin/python
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      # Gate 4 -- process guard: no direct commits to main; branch naming convention.
+      - id: guard-branch
+        name: branch guard (no commits to main; naming convention)
+        entry: tools/hooks/guard-branch.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      # Gate 5 -- no AI/assistant attribution in the commit message (commit-msg stage).
+      # Install once with:  .venv/bin/pre-commit install --hook-type commit-msg
+      - id: no-ai-attribution
+        name: no AI attribution in commit message
+        entry: tools/hooks/check-commit-msg.sh
+        language: script
+        stages: [commit-msg]
