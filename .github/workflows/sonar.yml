@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0 # full history so Sonar can attribute new code and blame
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
